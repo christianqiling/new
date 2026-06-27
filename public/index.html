@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>店内计时收费系统</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header id="topbar" class="hidden">
+    <div class="brand">🎮 店内计时收费系统</div>
+    <div class="topbar-right">
+      <span id="whoami" class="whoami"></span>
+      <button id="changePwBtn" class="btn btn-ghost">修改密码</button>
+      <button id="logoutBtn" class="btn btn-ghost">退出登录</button>
+    </div>
+  </header>
+
+  <main id="content"></main>
+
+  <div id="modalRoot"></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
