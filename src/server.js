@@ -129,6 +129,8 @@ const routes = {
   'GET /api/admin/pricing': api.adminGetPricing,
   'POST /api/admin/pricing': api.adminSetPricing,
   'GET /api/admin/reports': api.adminReports,
+  'GET /api/admin/audit-logs': api.auditLogs,
+  'GET /api/admin/visit-log': api.visitLog,
   'POST /api/admin/set-role': api.setRole,
   'POST /api/admin/set-permissions': api.setPermissions,
 };

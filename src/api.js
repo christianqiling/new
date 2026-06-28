@@ -63,12 +63,20 @@ function verifySuperQr(code) {
   return !!(u && u.role === ROLES.SUPER_ADMIN);
 }
 function verifySuperAuth(b) { b = b || {}; return verifySuperPw(b.superPw) || verifySuperCard(b.superCard) || verifySuperQr(b.superQr); }
+// 验证“本管理员”的二维码 / 卡片
+function verifyAdminQr(ctx, code) { const c = String(code || '').trim(); if (!c) return false; const rec = personalCodes.get(c); return !!(rec && rec.expires >= Date.now() && rec.userId === ctx.user.id); }
+function verifyAdminCard(ctx, cardNo) { const no = String(cardNo || '').trim(); if (!no) return false; const card = db.prepare('SELECT user_id FROM cards WHERE card_no = ?').get(no); return !!(card && card.user_id === ctx.user.id); }
 
-// 简单操作：本管理员密码（或二级统一密码）
+// 操作日志
+function logAction(ctx, action, detail) {
+  try { db.prepare('INSERT INTO audit_logs (actor_id, actor_name, action, detail, created_at) VALUES (?, ?, ?, ?, ?)').run(ctx.user ? ctx.user.id : null, ctx.user ? displayName(ctx.user) : '', action, detail || '', nowIso()); } catch (_) {}
+}
+
+// 简单操作：本管理员密码 / 二维码 / 卡片（或二级统一密码）
 function requireSimple(ctx) {
   const b = ctx.body || {};
-  if (verifyAdminPw(ctx.user, b.adminPassword) || verifyLevel2(b.level2)) return true;
-  ctx.fail('管理员密码错误', 403); return false;
+  if (verifyAdminPw(ctx.user, b.adminPassword) || verifyAdminQr(ctx, b.adminQr) || verifyAdminCard(ctx, b.adminCard) || verifyLevel2(b.level2)) return true;
+  ctx.fail('验证失败：管理员密码 / 二维码 / 卡片', 403); return false;
 }
 // 重要操作：二级统一密码
 function requireImportant(ctx) {
@@ -291,6 +299,7 @@ function adminCardAdd(ctx) {
   if (db.prepare('SELECT COUNT(*) AS c FROM cards WHERE user_id = ?').get(u.id).c >= 3) return ctx.fail('每位用户最多 3 张卡片');
   if (db.prepare('SELECT id FROM cards WHERE card_no = ?').get(no)) return ctx.fail('该卡号已被绑定');
   db.prepare('INSERT INTO cards (user_id, card_no, created_at) VALUES (?, ?, ?)').run(u.id, no, nowIso());
+  logAction(ctx, '添加卡片', `${displayName(db.prepare('SELECT * FROM users WHERE id=?').get(u.id))}：${no}`);
   return ctx.json({ ok: true });
 }
 function adminCardDelete(ctx) {
@@ -300,6 +309,7 @@ function adminCardDelete(ctx) {
   const u = db.prepare('SELECT role FROM users WHERE id = ?').get(c.user_id);
   if (!verifyForTarget(ctx, u ? u.role : ROLES.USER)) return;
   db.prepare('DELETE FROM cards WHERE id = ?').run(c.id);
+  logAction(ctx, '删除卡片', c.card_no);
   return ctx.json({ ok: true });
 }
 
@@ -309,6 +319,7 @@ function adminEndVisit(ctx) {
   const av = activeVisitOf(Number((ctx.body || {}).userId));
   if (!av) return ctx.fail('该用户当前不在店内');
   const settled = billing.settleVisit(av, Date.now(), true);
+  logAction(ctx, '强制离店', `用户#${Number((ctx.body || {}).userId)}`);
   return ctx.json({ ok: true, chargedYuan: round2(settled.charged_cents / 100), durationSec: Math.max(0, Math.floor((Date.parse(settled.end_time) - Date.parse(settled.start_time)) / 1000)) });
 }
 
@@ -329,6 +340,7 @@ function usersCreate(ctx) {
   if (db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(uname)) return ctx.fail('该用户名已存在');
   db.prepare("INSERT INTO users (username, qq, nickname, password_hash, role, permissions, balance_cents, created_at) VALUES (?, ?, ?, ?, 'USER', '[]', 0, ?)")
     .run(uname, qq ? String(qq).trim() : '', nickname ? String(nickname).trim() : '', auth.hashPassword(password), nowIso());
+  logAction(ctx, '新增用户', uname);
   return ctx.json({ ok: true });
 }
 function usersUpdate(ctx) {
@@ -346,9 +358,16 @@ function usersUpdate(ctx) {
   if (balanceYuan != null && balanceYuan !== '') { const b = Number(balanceYuan); if (!Number.isFinite(b)) return ctx.fail('余额不合法'); newBalance = Math.round(b * 100); }
   let newFree = u.free_cents || 0;
   if (freeYuan != null && freeYuan !== '') { const f = Number(freeYuan); if (!Number.isFinite(f) || f < 0) return ctx.fail('免费额度不合法'); newFree = Math.round(f * 100); }
+  const changes = [];
+  if (uname !== u.username) changes.push(`用户名 ${u.username}→${uname}`);
+  if (nqq !== (u.qq || '')) changes.push(`QQ ${u.qq || ''}→${nqq}`);
+  if (nick !== (u.nickname || '')) changes.push('修改昵称');
+  if (newBalance !== u.balance_cents) changes.push(`余额 ¥${round2(u.balance_cents / 100)}→¥${round2(newBalance / 100)}`);
+  if (newFree !== (u.free_cents || 0)) changes.push(`免费额度 ¥${round2((u.free_cents || 0) / 100)}→¥${round2(newFree / 100)}`);
   db.prepare('UPDATE users SET username = ?, qq = ?, nickname = ?, balance_cents = ?, free_cents = ? WHERE id = ?').run(uname, nqq, nick, newBalance, newFree, u.id);
   const delta = newBalance - u.balance_cents;
   if (delta !== 0) db.prepare("INSERT INTO transactions (user_id, type, amount_cents, operator_id, visit_id, note, created_at) VALUES (?, 'ADJUST', ?, ?, NULL, '管理员调整余额', ?)").run(u.id, delta, ctx.user.id, nowIso());
+  logAction(ctx, '修改用户信息', `${displayName(u)}：${changes.join('；') || '无字段变化'}`);
   return ctx.json({ ok: true });
 }
 function usersDelete(ctx) {
@@ -360,6 +379,7 @@ function usersDelete(ctx) {
   if (!verifyForTarget(ctx, u.role)) return;
   ['auth_tokens', 'payment_orders', 'transactions', 'visits', 'cards'].forEach((t) => db.prepare(`DELETE FROM ${t} WHERE user_id = ?`).run(u.id));
   db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
+  logAction(ctx, '删除用户', `${displayName(u)}（${roleLabel(u.role)}）`);
   return ctx.json({ ok: true });
 }
 function usersResetAvatar(ctx) {
@@ -368,6 +388,7 @@ function usersResetAvatar(ctx) {
   if (!u) return ctx.fail('用户不存在');
   if (!verifyForTarget(ctx, u.role)) return;
   db.prepare('UPDATE users SET avatar = NULL WHERE id = ?').run(u.id);
+  logAction(ctx, '重置头像', displayName(u));
   return ctx.json({ ok: true });
 }
 // 角色与权限（超级管理员 + 二级统一密码）
@@ -383,6 +404,7 @@ function setRole(ctx) {
   let setPw = '';
   if (role === ROLES.SUB_ADMIN && (!u.admin_password_hash)) setPw = ', admin_password_hash = ' + "'" + auth.hashPassword('123456') + "'";
   db.prepare(`UPDATE users SET role = ?, permissions = ?${setPw} WHERE id = ?`).run(role, perms, u.id);
+  logAction(ctx, '调整角色', `${displayName(u)} → ${roleLabel(role)}`);
   return ctx.json({ ok: true });
 }
 function setPermissions(ctx) {
@@ -395,6 +417,7 @@ function setPermissions(ctx) {
   if (!Array.isArray(permissions)) return ctx.fail('权限格式错误');
   const valid = Object.values(PERMISSIONS);
   db.prepare('UPDATE users SET permissions = ? WHERE id = ?').run(JSON.stringify(permissions.filter((p) => valid.includes(p))), u.id);
+  logAction(ctx, '调整权限', `${displayName(u)}：${permissions.filter((p) => valid.includes(p)).map((p) => auth.PERMISSION_LABELS[p] || p).join('、') || '无'}`);
   return ctx.json({ ok: true });
 }
 
@@ -405,6 +428,7 @@ function level2PasswordSet(ctx) {
   const np = (ctx.body || {}).newPassword;
   if (!np || String(np).length < 4) return ctx.fail('新二级密码至少 4 位');
   db.prepare("INSERT INTO settings (key, value) VALUES ('level2_password', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(auth.hashPassword(String(np)));
+  logAction(ctx, '修改二级统一密码', '');
   return ctx.json({ ok: true });
 }
 function myAdminPasswordSet(ctx) {
@@ -413,6 +437,7 @@ function myAdminPasswordSet(ctx) {
   if (!(verifyAdminPw(ctx.user, b.oldAdminPassword) || verifyLevel2(b.level2) || verifySuperQr(b.superQr))) return ctx.fail('需验证：原管理员密码 / 二级统一密码 / 超级管理员二维码', 403);
   if (!b.newPassword || String(b.newPassword).length < 4) return ctx.fail('新密码至少 4 位');
   db.prepare('UPDATE users SET admin_password_hash = ? WHERE id = ?').run(auth.hashPassword(String(b.newPassword)), ctx.user.id);
+  logAction(ctx, '修改本人管理员密码', '');
   return ctx.json({ ok: true });
 }
 function resetAdminPassword(ctx) {
@@ -423,6 +448,7 @@ function resetAdminPassword(ctx) {
   if (!u || !auth.isAdmin(u)) return ctx.fail('目标不是管理员');
   if (!b.newPassword || String(b.newPassword).length < 4) return ctx.fail('新密码至少 4 位');
   db.prepare('UPDATE users SET admin_password_hash = ? WHERE id = ?').run(auth.hashPassword(String(b.newPassword)), u.id);
+  logAction(ctx, '重置管理员密码', displayName(u));
   return ctx.json({ ok: true });
 }
 
@@ -451,6 +477,7 @@ function adminSetPricing(ctx) {
   const ins = db.prepare('INSERT INTO pricing_rules (start_hour, end_hour, rate_cents) VALUES (?, ?, ?)');
   for (const p of parsed) ins.run(p.sh, p.eh, p.cents);
   db.prepare("INSERT INTO settings (key, value) VALUES ('base_fee_cents', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(bf));
+  logAction(ctx, '调整营业定价', `时段 ${parsed.length} 条，起步费 ¥${round2(bf / 100)}`);
   return ctx.json({ ok: true });
 }
 
@@ -512,6 +539,7 @@ function adminRechargeByInput(ctx) {
   const amt = Number((ctx.body || {}).amountYuan);
   if (!val) return ctx.fail('请扫描/输入二维码或卡号');
   if (!(amt > 0)) return ctx.fail('请输入有效的充值金额');
+  if (!requireSimple(ctx)) return;
   let userId = null, via = '';
   const rec = personalCodes.get(val);
   if (rec && rec.expires >= Date.now()) { userId = rec.userId; via = 'code'; }
@@ -523,6 +551,7 @@ function adminRechargeByInput(ctx) {
   db.prepare('UPDATE users SET balance_cents = ? WHERE id = ?').run(newBal, u.id);
   db.prepare("INSERT INTO transactions (user_id, type, amount_cents, operator_id, visit_id, note, created_at) VALUES (?, 'RECHARGE', ?, ?, NULL, ?, ?)").run(u.id, cents, ctx.user.id, via === 'card' ? '刷卡充值' : '扫码充值', nowIso());
   if (via === 'code') personalCodes.delete(val);
+  logAction(ctx, '充值', `${displayName(u)} +¥${round2(amt)}（${via === 'card' ? '刷卡' : '扫码'}）`);
   return ctx.json({ ok: true, username: displayName(u), balanceYuan: round2(newBal / 100), via });
 }
 
@@ -538,6 +567,7 @@ function grantFree(ctx) {
   if (Array.isArray(ids) && ids.length) { const set = new Set(ids.map(Number)); users = users.filter((u) => set.has(u.id)); }
   const upd = db.prepare('UPDATE users SET free_cents = ? WHERE id = ?');
   for (const u of users) upd.run((u.free_cents || 0) + cents, u.id);
+  logAction(ctx, '发放免费额度', `+¥${round2(amt)} × ${users.length} 人`);
   return ctx.json({ ok: true, count: users.length });
 }
 
@@ -596,10 +626,28 @@ function announceCreate(ctx) {
   const { title, content, pinned } = ctx.body || {};
   if (!content || !String(content).trim()) return ctx.fail('请填写公告内容');
   db.prepare('INSERT INTO announcements (title, content, pinned, author_id, author_name, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(title ? String(title).trim() : '', String(content).trim(), pinned ? 1 : 0, ctx.user.id, displayName(ctx.user), nowIso());
+  logAction(ctx, '发布公告', (title ? String(title).trim() : String(content).trim()).slice(0, 20));
   return ctx.json({ ok: true });
 }
-function announceDelete(ctx) { if (!ctx.user || !auth.isAdmin(ctx.user)) return ctx.fail('无权限', 403); db.prepare('DELETE FROM announcements WHERE id = ?').run(Number((ctx.body || {}).id)); return ctx.json({ ok: true }); }
-function announcePin(ctx) { if (!ctx.user || !auth.isAdmin(ctx.user)) return ctx.fail('无权限', 403); const { id, pinned } = ctx.body || {}; db.prepare('UPDATE announcements SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, Number(id)); return ctx.json({ ok: true }); }
+function announceDelete(ctx) { if (!ctx.user || !auth.isAdmin(ctx.user)) return ctx.fail('无权限', 403); db.prepare('DELETE FROM announcements WHERE id = ?').run(Number((ctx.body || {}).id)); logAction(ctx, '删除公告', ''); return ctx.json({ ok: true }); }
+function announcePin(ctx) { if (!ctx.user || !auth.isAdmin(ctx.user)) return ctx.fail('无权限', 403); const { id, pinned } = ctx.body || {}; db.prepare('UPDATE announcements SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, Number(id)); logAction(ctx, pinned ? '置顶公告' : '取消置顶', ''); return ctx.json({ ok: true }); }
+
+// 操作日志 / 进出记录
+function auditLogs(ctx) {
+  if (!ctx.user || !auth.isAdmin(ctx.user)) return ctx.fail('无权限', 403);
+  const rows = db.prepare('SELECT * FROM audit_logs ORDER BY id DESC LIMIT 500').all();
+  return ctx.json({ items: rows.map((r) => ({ actorName: r.actor_name || '', action: r.action, detail: r.detail || '', time: r.created_at })) });
+}
+function visitLog(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.VIEW_REPORTS)) return;
+  const dateStr = (ctx.query.date && /^\d{4}-\d{2}-\d{2}$/.test(ctx.query.date)) ? ctx.query.date : localDate(new Date());
+  const rows = db.prepare('SELECT v.*, u.username, u.nickname, u.role FROM visits v JOIN users u ON u.id = v.user_id ORDER BY v.start_time DESC').all();
+  const items = rows.filter((v) => localDate(new Date(Date.parse(v.start_time))) === dateStr).map((v) => {
+    const endMs = v.end_time ? Date.parse(v.end_time) : Date.now();
+    return { username: (v.nickname && v.nickname.trim()) ? v.nickname.trim() : v.username, role: v.role, startTime: v.start_time, endTime: v.end_time, durationSec: Math.max(0, Math.floor((endMs - Date.parse(v.start_time)) / 1000)), status: v.status };
+  });
+  return ctx.json({ date: dateStr, items });
+}
 
 module.exports = {
   register, login, logout, status, checkUsername,
@@ -615,6 +663,7 @@ module.exports = {
   level2PasswordSet, myAdminPasswordSet, resetAdminPassword,
   usersExport,
   announcementsList, announceCreate, announceDelete, announcePin,
+  auditLogs, visitLog,
   adminGetPricing, adminSetPricing, adminReports,
   rechargeMethods, rechargeCreate, rechargeConfirm, rechargeStatus,
   myTransactions, adminTransactions,

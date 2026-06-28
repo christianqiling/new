@@ -99,6 +99,15 @@ function migrate() {
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
 
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor_id   INTEGER,
+      actor_name TEXT,
+      action     TEXT NOT NULL,
+      detail     TEXT,
+      created_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_visits_status ON visits(status);
     CREATE INDEX IF NOT EXISTS idx_visits_user ON visits(user_id);
     CREATE INDEX IF NOT EXISTS idx_tx_created ON transactions(created_at);

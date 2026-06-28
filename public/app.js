@@ -103,7 +103,8 @@ function promptField(title, label, type, key, onConfirm) {
     setTimeout(() => w.querySelector('#pfin').focus(), 50);
   });
 }
-const promptAdminPw = (onConfirm) => promptField('验证管理员密码', '管理员密码', 'password', 'adminPassword', onConfirm);
+const ADMIN_METHODS = [{ key: 'adminPassword', label: '管理员密码', type: 'password' }, { key: 'adminQr', label: '管理员二维码', type: 'text' }, { key: 'adminCard', label: '管理员卡片', type: 'text' }];
+function promptAdminPw(onConfirm) { methodAuthModal('验证身份（密码 / 二维码 / 卡片）', ADMIN_METHODS, [], onConfirm); }
 const promptLevel2 = (onConfirm) => promptField('验证二级统一密码', '二级统一密码', 'password', 'level2', onConfirm);
 function authForTarget(role, onConfirm) { (role === 'USER' ? promptAdminPw : promptLevel2)(onConfirm); }
 // 多方式验证：methods=[{key,label,type}], extra=[{key,label,type}]
@@ -120,6 +121,31 @@ function methodAuthModal(title, methods, extra, onConfirm) {
       (extra || []).forEach((f) => { obj[f.key] = w.querySelector('#mf_' + f.key).value; });
       try { await onConfirm(obj, close); } catch (e) { toast(e.message, 'err'); }
     });
+  });
+}
+
+// 在容器内挂载"方式选择+输入"，返回收集函数
+function mountMethodAuth(container, methods) {
+  let cur = methods[0];
+  const render = () => { container.querySelector('#maField').innerHTML = `<label>${cur.label}</label><input id="maInput" type="${cur.type || 'text'}">`; const i = container.querySelector('#maInput'); if (i) setTimeout(() => i.focus(), 30); };
+  container.innerHTML = `<div class="tabs">${methods.map((m, i) => `<button data-k="${m.key}" class="${i === 0 ? 'active' : ''}">${m.label}</button>`).join('')}</div><div id="maField"></div>`;
+  container.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => { container.querySelectorAll('.tabs button').forEach((x) => x.classList.remove('active')); b.classList.add('active'); cur = methods.find((m) => m.key === b.dataset.k); render(); }));
+  render();
+  return () => { const o = {}; o[cur.key] = container.querySelector('#maInput').value; return o; };
+}
+// 用户充值：输入金额后 → 扫码/刷卡 → 下一步 → 验证管理员身份
+function openRechargeFlow(amountYuan, done) {
+  nestedModal('用户充值', `<p class="muted">充值金额：<b class="tx-in">${money(amountYuan)}</b></p><label>扫描顾客二维码 / 刷卡（自动填入，也可手动输入）</label><input id="rcVal"><button id="rcNext" class="btn btn-block" style="margin-top:14px">下一步</button>`, (w, close) => {
+    setTimeout(() => w.querySelector('#rcVal').focus(), 50);
+    const go = () => {
+      const val = w.querySelector('#rcVal').value.trim(); if (!val) return toast('请扫码或刷卡', 'err');
+      const body = w.querySelector('.modal-body');
+      body.innerHTML = `<p class="muted">为该用户充值 <b class="tx-in">${money(amountYuan)}</b>，请验证管理员身份</p><div id="raWrap"></div><button id="raOk" class="btn btn-block" style="margin-top:14px">确认充值</button>`;
+      const collect = mountMethodAuth(body.querySelector('#raWrap'), ADMIN_METHODS);
+      body.querySelector('#raOk').addEventListener('click', async () => { try { const r = await api('/api/admin/recharge-by-input', { method: 'POST', body: JSON.stringify({ value: val, amountYuan, ...collect() }) }); toast(`已为 ${r.username} ${r.via === 'card' ? '刷卡' : '扫码'}充值，余额 ${money(r.balanceYuan)}`, 'ok'); close(); if (done) done(); } catch (e) { toast(e.message, 'err'); } });
+    };
+    w.querySelector('#rcNext').addEventListener('click', go);
+    w.querySelector('#rcVal').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
   });
 }
 
@@ -338,6 +364,7 @@ function renderAdmin() {
   const tabs = [['overview', '店内总览']];
   if (caps.MANAGE_USERS || caps.MANAGE_CARDS || caps.GRANT_FREE) tabs.push(['users', '用户列表']);
   if (caps.VIEW_REPORTS || caps.MANAGE_PRICING) tabs.push(['business', '营业管理']);
+  tabs.push(['audit', '操作日志']);
   if (!tabs.find((t) => t[0] === state.adminTab)) state.adminTab = 'overview';
   content.innerHTML = `<div class="adminnav">${tabs.map(([k, label]) => `<button data-tab="${k}" class="${state.adminTab === k ? 'active' : ''}">${label}</button>`).join('')}</div><div id="adminBody"></div>`;
   content.querySelectorAll('.adminnav button').forEach((b) => b.addEventListener('click', () => { state._navAnim = true; state.adminTab = b.dataset.tab; renderAdmin(); }));
@@ -346,19 +373,23 @@ function renderAdmin() {
   if (state.adminTab === 'overview') renderAdminOverview(body);
   else if (state.adminTab === 'users') renderAdminUserList(body);
   else if (state.adminTab === 'business') renderAdminBusiness(body);
+  else if (state.adminTab === 'audit') renderAuditLog(body);
+}
+async function renderAuditLog(box) {
+  box.innerHTML = '<div class="card"><p class="muted">加载中…</p></div>';
+  let data; try { data = await api('/api/admin/audit-logs'); } catch (e) { box.innerHTML = `<div class="card"><p class="empty">${esc(e.message)}</p></div>`; return; }
+  box.innerHTML = `<div class="card"><h2>操作日志（所有管理员的修改操作）</h2>${data.items.length ? `<table><thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>详情</th></tr></thead><tbody>${data.items.map((r) => `<tr><td class="mono muted">${new Date(r.time).toLocaleString('zh-CN')}</td><td>${esc(r.actorName)}</td><td>${esc(r.action)}</td><td class="muted">${esc(r.detail)}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">暂无记录</p>'}</div>`;
 }
 function renderAdminOverview(body) {
   const st = state.status;
   body.innerHTML = `<div class="grid cols-2">
     <div>${accountCardHtml(st)}${playCardHtml(st)}
-      ${st.caps.RECHARGE ? `<div class="card"><h2>用户充值（扫码 / 刷卡）</h2><p class="muted">用扫码枪扫描顾客二维码，或刷卡读取卡号（也可手动粘贴），再输入金额。</p><label>二维码内容 / 卡号</label><input id="scCode" placeholder="扫码或刷卡后自动填入" /><div class="row"><div><label>充值金额（元）</label><input id="scAmt" type="number" min="0" step="0.01" /></div><div style="flex:none;align-self:flex-end"><button id="scBtn" class="btn btn-green">确认充值</button></div></div></div>` : ''}</div>
+      ${st.caps.RECHARGE ? `<div class="card"><h2>用户充值</h2><p class="muted">输入金额后扫码 / 刷卡并验证管理员身份完成充值。</p><div class="row"><div><label>充值金额（元）</label><input id="scAmt" type="number" min="0" step="0.01" /></div><div style="flex:none;align-self:flex-end"><button id="scBtn" class="btn btn-green">充值</button></div></div></div>` : ''}</div>
     <div><div class="card"><h2>店内实况</h2><div id="storeBox"></div></div><div class="card"><h2>📢 店内公告</h2><div id="annBox"><p class="muted">加载中…</p></div></div></div>
   </div>`;
   wirePlayAccount(); buildStore(st); renderAnnouncements('annBox');
   if (st.caps.RECHARGE) {
-    const code = $('#scCode');
-    $('#scBtn').addEventListener('click', async () => { const v = code.value.trim(), amt = Number($('#scAmt').value); if (!v) return toast('请扫码或刷卡', 'err'); if (!(amt > 0)) return toast('请输入有效金额', 'err'); try { const r = await api('/api/admin/recharge-by-input', { method: 'POST', body: JSON.stringify({ value: v, amountYuan: amt }) }); toast(`已为 ${r.username} ${r.via === 'card' ? '刷卡' : '扫码'}充值，余额 ${money(r.balanceYuan)}`, 'ok'); code.value = ''; $('#scAmt').value = ''; } catch (e) { toast(e.message, 'err'); } });
-    code.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#scAmt').focus(); } });
+    $('#scBtn').addEventListener('click', () => { const amt = Number($('#scAmt').value); if (!(amt > 0)) return toast('请输入有效金额', 'err'); openRechargeFlow(amt, () => { $('#scAmt').value = ''; }); });
   }
   applyNavAnim();
 }
@@ -462,11 +493,20 @@ function renderAdminBusiness(body) {
   if (caps.VIEW_REPORTS) subs.push(['reports', '营业报表']);
   if (caps.MANAGE_PRICING) subs.push(['pricing', '营业定价']);
   if (caps.VIEW_REPORTS) subs.push(['txns', '流水明细']);
+  if (caps.VIEW_REPORTS) subs.push(['visits', '进出记录']);
   if (!subs.find((s) => s[0] === state.bizTab)) state.bizTab = subs[0] ? subs[0][0] : 'reports';
   body.innerHTML = `<div class="adminnav sub">${subs.map(([k, label]) => `<button data-sub="${k}" class="${state.bizTab === k ? 'active' : ''}">${label}</button>`).join('')}</div><div id="bizBody"></div>`;
   body.querySelectorAll('.adminnav.sub button').forEach((b) => b.addEventListener('click', () => { state._bizAnim = true; state.bizTab = b.dataset.sub; renderAdminBusiness(body); }));
   const bb = $('#bizBody'); if (state._bizAnim) { state._bizAnim = false; bb.classList.add('fx-in'); }
-  if (state.bizTab === 'reports') renderAdminReports(bb); else if (state.bizTab === 'pricing') renderAdminPricing(bb); else renderAdminTxns(bb);
+  if (state.bizTab === 'reports') renderAdminReports(bb); else if (state.bizTab === 'pricing') renderAdminPricing(bb); else if (state.bizTab === 'visits') renderVisitLog(bb); else renderAdminTxns(bb);
+}
+async function renderVisitLog(box) {
+  box.innerHTML = '<div class="card"><p class="muted">加载中…</p></div>';
+  if (!state._visitDate) state._visitDate = new Date().toISOString().slice(0, 10);
+  let data; try { data = await api('/api/admin/visit-log?date=' + state._visitDate); } catch (e) { box.innerHTML = `<div class="card"><p class="empty">${esc(e.message)}</p></div>`; return; }
+  box.innerHTML = `<div class="card"><h2>进出记录（含管理员）</h2><div class="row" style="margin-bottom:14px"><div style="flex:none"><label>选择日期</label><input id="vlDate" type="date" value="${data.date}" /></div></div>
+    ${data.items.length ? `<table><thead><tr><th>用户</th><th>身份</th><th>入店</th><th>离店</th><th class="right">在店时长</th></tr></thead><tbody>${data.items.map((r) => `<tr><td>${esc(r.username)}</td><td>${r.role === 'USER' ? '<span class="badge user">顾客</span>' : roleBadge(r.role)}</td><td class="mono">${new Date(r.startTime).toLocaleTimeString('zh-CN')}</td><td class="mono">${r.endTime ? new Date(r.endTime).toLocaleTimeString('zh-CN') : '<span class="pill in">在店中</span>'}</td><td class="right mono">${dur(r.durationSec)}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">当日暂无进出记录</p>'}</div>`;
+  $('#vlDate').addEventListener('change', (e) => { state._visitDate = e.target.value; renderVisitLog(box); });
 }
 async function renderAdminReports(box) {
   box.innerHTML = '<div class="card"><p class="muted">加载中…</p></div>';
