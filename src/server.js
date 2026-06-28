@@ -88,6 +88,7 @@ const routes = {
   'POST /api/register': api.register,
   'POST /api/login': api.login,
   'POST /api/logout': api.logout,
+  'GET /api/check-username': api.checkUsername,
   'GET /api/status': api.status,
   'POST /api/visit/start': api.visitStart,
   'POST /api/visit/end': api.visitEnd,

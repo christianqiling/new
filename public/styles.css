@@ -186,3 +186,12 @@ small.hint { color: var(--muted); font-size: 12px; }
 .avatar-edit { display:flex; align-items:center; gap:16px; margin-bottom: 8px; }
 .avatar-edit .acts { display:flex; flex-direction:column; gap:8px; }
 .section-divider { height:1px; background:var(--line); margin: 20px 0; border:none; }
+
+
+/* 注册用户名可用性提示 */
+.uname-hint { font-size: 12px; margin-top: 6px; min-height: 16px; color: var(--muted); }
+.uname-hint.ok { color: var(--green); }
+.uname-hint.err { color: var(--red); }
+
+/* 用户列表搜索框 */
+.search-box { max-width: 280px; margin-bottom: 14px; }

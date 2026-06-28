@@ -89,7 +89,7 @@ function register(ctx) {
   if (!password || String(password).length < 4) return ctx.fail('密码至少 4 位');
   if (!qq || !String(qq).trim()) return ctx.fail('请填写 QQ 号');
   const uname = String(username).trim();
-  const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(uname);
+  const exists = db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(uname);
   if (exists) return ctx.fail('该用户名已被注册');
   const info = db.prepare(
     "INSERT INTO users (username, qq, nickname, password_hash, role, permissions, balance_cents, created_at) VALUES (?, ?, ?, ?, 'USER', '[]', 0, ?)"
@@ -102,7 +102,7 @@ function register(ctx) {
 function login(ctx) {
   const { username, password } = ctx.body || {};
   if (!username || !password) return ctx.fail('请输入用户名和密码');
-  const u = db.prepare('SELECT * FROM users WHERE username = ?').get(String(username).trim());
+  const u = db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(String(username).trim());
   if (!u || !auth.verifyPassword(password, u.password_hash)) return ctx.fail('用户名或密码错误', 401);
   createSession(ctx, u.id);
   return ctx.json({ ok: true, user: pubUser(u) });
@@ -112,6 +112,14 @@ function logout(ctx) {
   if (ctx.token) db.prepare('DELETE FROM auth_tokens WHERE token = ?').run(ctx.token);
   ctx.setCookie('sid', '', { httpOnly: true, path: '/', maxAge: 0 });
   return ctx.json({ ok: true });
+}
+
+// 注册时实时检测用户名可用性（大小写不敏感）
+function checkUsername(ctx) {
+  const name = String(ctx.query.username || '').trim();
+  if (!name) return ctx.json({ available: false, reason: 'empty' });
+  const exists = db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(name);
+  return ctx.json({ available: !exists });
 }
 
 // ---------- 状态 ----------
@@ -228,7 +236,7 @@ function profileUpdate(ctx) {
   const uname = username != null ? String(username).trim() : u.username;
   if (!uname) return ctx.fail('用户名不能为空');
   if (uname !== u.username) {
-    const exists = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(uname, u.id);
+    const exists = db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE AND id != ?').get(uname, u.id);
     if (exists) return ctx.fail('该用户名已被占用');
   }
   const nick = nickname != null ? String(nickname).trim() : (u.nickname || '');
@@ -308,7 +316,7 @@ function usersCreate(ctx) {
   if (!username || !String(username).trim()) return ctx.fail('请填写用户名');
   if (!password || String(password).length < 4) return ctx.fail('密码至少 4 位');
   const uname = String(username).trim();
-  if (db.prepare('SELECT id FROM users WHERE username = ?').get(uname)) return ctx.fail('该用户名已存在');
+  if (db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(uname)) return ctx.fail('该用户名已存在');
   db.prepare(
     "INSERT INTO users (username, qq, nickname, password_hash, role, permissions, balance_cents, created_at) VALUES (?, ?, ?, ?, 'USER', '[]', 0, ?)"
   ).run(uname, qq ? String(qq).trim() : '', nickname ? String(nickname).trim() : '', auth.hashPassword(password), nowIso());
@@ -324,7 +332,7 @@ function usersUpdate(ctx) {
 
   const uname = username != null ? String(username).trim() : u.username;
   if (!uname) return ctx.fail('用户名不能为空');
-  if (uname !== u.username && db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(uname, u.id)) {
+  if (uname !== u.username && db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE AND id != ?').get(uname, u.id)) {
     return ctx.fail('该用户名已被占用');
   }
   const nqq = qq != null ? String(qq).trim() : (u.qq || '');
@@ -591,7 +599,7 @@ function adminTransactions(ctx) {
 }
 
 module.exports = {
-  register, login, logout, status,
+  register, login, logout, status, checkUsername,
   visitStart, visitEnd,
   profileUpdate, profileAvatar, profileAvatarReset, changePassword,
   adminEndVisit,

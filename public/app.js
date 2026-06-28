@@ -53,7 +53,7 @@ const PERM_LABELS = {
 const state = {
   status: null, statusAt: 0, view: 'auth',
   adminTab: 'overview', bizTab: 'reports', authTab: 'login',
-  _reportDate: null, _txFilter: { userId: '', type: '' },
+  _reportDate: null, _txFilter: { userId: '', type: '' }, _userSearch: '',
 };
 let pollTimer = null, uiTimer = null;
 
@@ -90,6 +90,37 @@ function openModal(title, bodyHtml, onMount) {
   });
   if (onMount) onMount(close);
   return close;
+}
+
+// 点保存/删除后弹出"请输入操作密码"，验证后执行 onConfirm(opPassword, closePrompt)。
+// 作为叠加层显示在当前弹窗之上；onConfirm 成功应调用 closePrompt()，失败抛错则保留以便重试。
+function promptOpPassword(onConfirm) {
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-overlay';
+  wrap.style.zIndex = '250';
+  wrap.innerHTML = `
+    <div class="modal" style="max-width:380px">
+      <div class="modal-head"><h2>请输入操作密码</h2><button class="modal-close" aria-label="关闭">×</button></div>
+      <div class="modal-body">
+        <p class="muted">该操作需要验证操作密码。</p>
+        <label>操作密码</label>
+        <input id="opInput" type="password" placeholder="请输入管理操作密码" />
+        <button id="opOk" class="btn btn-block" style="margin-top:16px">确认并保存</button>
+      </div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  wrap.querySelector('.modal-close').addEventListener('click', close);
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+  const input = wrap.querySelector('#opInput');
+  setTimeout(() => input.focus(), 50);
+  const submit = async () => {
+    const pw = input.value;
+    if (!pw) return toast('请输入操作密码', 'err');
+    try { await onConfirm(pw, close); } catch (e) { toast(e.message, 'err'); }
+  };
+  wrap.querySelector('#opOk').addEventListener('click', submit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 }
 
 // 文件 -> 128px 方形头像 dataURL
@@ -199,6 +230,7 @@ function renderAuth() {
           <button id="loginBtn" class="btn btn-block" style="margin-top:18px">登录</button>
         ` : `
           <label>用户名</label><input id="ru" placeholder="设置用户名" autocomplete="username" />
+          <div id="ruHint" class="uname-hint"></div>
           <label>QQ 号</label><input id="rq" placeholder="请输入 QQ 号" inputmode="numeric" />
           <label>密码</label><input id="rp" type="password" placeholder="至少 4 位" autocomplete="new-password" />
           <button id="regBtn" class="btn btn-block" style="margin-top:18px">注册并登录</button>
@@ -215,6 +247,21 @@ function renderAuth() {
     $('#loginBtn').addEventListener('click', submit);
     $('#lp').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
   } else {
+    let unameTimer = null;
+    const ruEl = $('#ru'), hintEl = $('#ruHint');
+    ruEl.addEventListener('input', () => {
+      const v = ruEl.value.trim();
+      clearTimeout(unameTimer);
+      if (!v) { hintEl.textContent = ''; hintEl.className = 'uname-hint'; return; }
+      hintEl.textContent = '检测中…'; hintEl.className = 'uname-hint';
+      unameTimer = setTimeout(async () => {
+        try {
+          const r = await api('/api/check-username?username=' + encodeURIComponent(v));
+          if (r.available) { hintEl.textContent = '✓ 用户名可用'; hintEl.className = 'uname-hint ok'; }
+          else { hintEl.textContent = '✗ 用户名已被占用'; hintEl.className = 'uname-hint err'; }
+        } catch (_) { hintEl.textContent = ''; }
+      }, 400);
+    });
     $('#regBtn').addEventListener('click', async () => {
       try {
         await api('/api/register', { method: 'POST', body: JSON.stringify({ username: $('#ru').value, qq: $('#rq').value, password: $('#rp').value }) });
@@ -446,6 +493,16 @@ async function renderAdminUserList(body) {
   try { data = await api('/api/admin/users'); } catch (e) { body.innerHTML = `<div class="card"><p class="empty">${esc(e.message)}</p></div>`; return; }
   const isSuper = state.status.caps.isSuper;
 
+  const rowHtml = (u) => `<tr>
+      <td><div style="display:flex;align-items:center;gap:10px">${avatarHtml(u.avatar, u.displayName, 'sz-32')}
+        <span><b>${esc(u.displayName)}</b>${u.nickname ? `<br><small class="muted">@${esc(u.username)}</small>` : ''}</span></div></td>
+      <td class="muted">${esc(u.qq)}</td>
+      <td>${roleBadge(u.role)}</td>
+      <td class="right mono">${money(u.balanceYuan)}</td>
+      <td>${u.inStore ? '<span class="pill in">在店</span>' : '<span class="pill out">离店</span>'}</td>
+      <td class="right">${u.role === 'SUPER_ADMIN' ? '<span class="muted">—</span>' : `<button class="btn btn-sm editUserBtn" data-id="${u.id}">管理</button>`}</td>
+    </tr>`;
+
   body.innerHTML = `
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
@@ -455,25 +512,28 @@ async function renderAdminUserList(body) {
           <button id="addUserBtn" class="btn btn-sm">+ 新增用户</button>
         </div>
       </div>
-      <small class="hint">修改 / 删除用户信息需输入操作密码。</small>
-      <table style="margin-top:12px"><thead><tr><th>用户</th><th>QQ</th><th>身份</th><th class="right">余额</th><th>状态</th><th class="right">操作</th></tr></thead>
-      <tbody>
-        ${data.users.map((u) => `<tr>
-          <td><div style="display:flex;align-items:center;gap:10px">${avatarHtml(u.avatar, u.displayName, 'sz-32')}
-            <span><b>${esc(u.displayName)}</b>${u.nickname ? `<br><small class="muted">@${esc(u.username)}</small>` : ''}</span></div></td>
-          <td class="muted">${esc(u.qq)}</td>
-          <td>${roleBadge(u.role)}</td>
-          <td class="right mono">${money(u.balanceYuan)}</td>
-          <td>${u.inStore ? '<span class="pill in">在店</span>' : '<span class="pill out">离店</span>'}</td>
-          <td class="right">${u.role === 'SUPER_ADMIN' ? '<span class="muted">—</span>' : `<button class="btn btn-sm editUserBtn" data-id="${u.id}">管理</button>`}</td>
-        </tr>`).join('')}
-      </tbody></table>
+      <input id="userSearch" class="search-box" placeholder="🔍 搜索 用户名 / 昵称 / QQ 号" value="${esc(state._userSearch || '')}" />
+      <table><thead><tr><th>用户</th><th>QQ</th><th>身份</th><th class="right">余额</th><th>状态</th><th class="right">操作</th></tr></thead>
+      <tbody id="userRows"></tbody></table>
+      <small class="hint" style="display:block;margin-top:10px">修改 / 删除用户信息需输入操作密码。</small>
     </div>`;
 
-  body.querySelectorAll('.editUserBtn').forEach((b) => b.addEventListener('click', () => {
-    const u = data.users.find((x) => x.id === Number(b.dataset.id));
-    openUserEditModal(u, () => renderAdminUserList(body));
-  }));
+  const paint = () => {
+    const q = (state._userSearch || '').trim().toLowerCase();
+    const list = !q ? data.users : data.users.filter((u) =>
+      (u.username || '').toLowerCase().includes(q) ||
+      (u.nickname || '').toLowerCase().includes(q) ||
+      (u.qq || '').toLowerCase().includes(q));
+    const tb = $('#userRows');
+    tb.innerHTML = list.length ? list.map(rowHtml).join('') : '<tr><td colspan="6" class="empty">未找到匹配的用户</td></tr>';
+    tb.querySelectorAll('.editUserBtn').forEach((b) => b.addEventListener('click', () => {
+      const u = data.users.find((x) => x.id === Number(b.dataset.id));
+      openUserEditModal(u, () => renderAdminUserList(body));
+    }));
+  };
+  paint();
+
+  $('#userSearch').addEventListener('input', (e) => { state._userSearch = e.target.value; paint(); });
   $('#addUserBtn').addEventListener('click', () => openUserAddModal(() => renderAdminUserList(body)));
   if (isSuper) $('#opPwBtn').addEventListener('click', openOpPasswordModal);
 }
@@ -484,16 +544,16 @@ function openUserAddModal(done) {
     <label>昵称</label><input id="auN" placeholder="店内显示名（选填）" />
     <label>QQ 号</label><input id="auQ" placeholder="选填" />
     <label>初始密码</label><input id="auP" type="password" placeholder="至少 4 位" />
-    <label>操作密码</label><input id="auOp" type="password" placeholder="管理操作密码" />
     <button id="auBtn" class="btn btn-block" style="margin-top:16px">创建用户</button>
   `, (close) => {
-    $('#auBtn').addEventListener('click', async () => {
-      try {
-        await api('/api/admin/users/create', { method: 'POST', body: JSON.stringify({
-          username: $('#auU').value, nickname: $('#auN').value, qq: $('#auQ').value, password: $('#auP').value, opPassword: $('#auOp').value,
-        }) });
-        toast('用户已创建', 'ok'); close(); done();
-      } catch (e) { toast(e.message, 'err'); }
+    $('#auBtn').addEventListener('click', () => {
+      const payload = { username: $('#auU').value, nickname: $('#auN').value, qq: $('#auQ').value, password: $('#auP').value };
+      if (!payload.username.trim()) return toast('请填写用户名', 'err');
+      if ((payload.password || '').length < 4) return toast('密码至少 4 位', 'err');
+      promptOpPassword(async (opPassword, closeOp) => {
+        await api('/api/admin/users/create', { method: 'POST', body: JSON.stringify({ ...payload, opPassword }) });
+        toast('用户已创建', 'ok'); closeOp(); close(); done();
+      });
     });
   });
 }
@@ -518,43 +578,43 @@ function openUserEditModal(u, done) {
         <div class="perm-grid">${allPerms.map((p) => `<label><input type="checkbox" class="euPerm" value="${p}" ${u.permissions.includes(p) ? 'checked' : ''}>${PERM_LABELS[p]}</label>`).join('')}</div>
       </div>` : ''}
     <hr class="section-divider" />
-    <label>操作密码</label><input id="euOp" type="password" placeholder="修改/删除需输入操作密码" />
-    <div class="row" style="margin-top:14px">
+    <div class="row" style="margin-top:4px">
       <button id="euSave" class="btn">保存修改</button>
       <button id="euDel" class="btn btn-red" style="flex:none">删除用户</button>
     </div>
+    <small class="hint" style="display:block;margin-top:10px">保存 / 删除 / 重置头像时需输入操作密码。</small>
   `, (close) => {
     if (isSuper) {
       const roleSel = $('#euRole');
       roleSel.addEventListener('change', () => { $('#euPermWrap').style.display = roleSel.value === 'SUB_ADMIN' ? '' : 'none'; });
     }
-    $('#euResetAvatar').addEventListener('click', async () => {
-      const opPassword = $('#euOp').value;
-      try { await api('/api/admin/users/reset-avatar', { method: 'POST', body: JSON.stringify({ userId: u.id, opPassword }) });
-        toast('头像已恢复默认', 'ok'); close(); done(); } catch (e) { toast(e.message, 'err'); }
+    $('#euResetAvatar').addEventListener('click', () => {
+      promptOpPassword(async (opPassword, closeOp) => {
+        await api('/api/admin/users/reset-avatar', { method: 'POST', body: JSON.stringify({ userId: u.id, opPassword }) });
+        toast('头像已恢复默认', 'ok'); closeOp(); close(); done();
+      });
     });
-    $('#euSave').addEventListener('click', async () => {
-      const opPassword = $('#euOp').value;
-      try {
-        await api('/api/admin/users/update', { method: 'POST', body: JSON.stringify({
-          userId: u.id, username: $('#euU').value, nickname: $('#euN').value, qq: $('#euQ').value, balanceYuan: $('#euB').value, opPassword,
-        }) });
+    $('#euSave').addEventListener('click', () => {
+      const payload = { userId: u.id, username: $('#euU').value, nickname: $('#euN').value, qq: $('#euQ').value, balanceYuan: $('#euB').value };
+      const role = isSuper ? $('#euRole').value : null;
+      const permissions = isSuper ? [...document.querySelectorAll('.euPerm:checked')].map((c) => c.value) : null;
+      promptOpPassword(async (opPassword, closeOp) => {
+        await api('/api/admin/users/update', { method: 'POST', body: JSON.stringify({ ...payload, opPassword }) });
         if (isSuper) {
-          const role = $('#euRole').value;
           await api('/api/admin/set-role', { method: 'POST', body: JSON.stringify({ userId: u.id, role, opPassword }) });
           if (role === 'SUB_ADMIN') {
-            const permissions = [...document.querySelectorAll('.euPerm:checked')].map((c) => c.value);
             await api('/api/admin/set-permissions', { method: 'POST', body: JSON.stringify({ userId: u.id, permissions, opPassword }) });
           }
         }
-        toast('已保存', 'ok'); close(); done();
-      } catch (e) { toast(e.message, 'err'); }
+        toast('已保存', 'ok'); closeOp(); close(); done();
+      });
     });
-    $('#euDel').addEventListener('click', async () => {
+    $('#euDel').addEventListener('click', () => {
       if (!confirm(`确定删除用户「${u.displayName}」？该操作不可恢复。`)) return;
-      const opPassword = $('#euOp').value;
-      try { await api('/api/admin/users/delete', { method: 'POST', body: JSON.stringify({ userId: u.id, opPassword }) });
-        toast('用户已删除', 'ok'); close(); done(); } catch (e) { toast(e.message, 'err'); }
+      promptOpPassword(async (opPassword, closeOp) => {
+        await api('/api/admin/users/delete', { method: 'POST', body: JSON.stringify({ userId: u.id, opPassword }) });
+        toast('用户已删除', 'ok'); closeOp(); close(); done();
+      });
     });
   });
 }
