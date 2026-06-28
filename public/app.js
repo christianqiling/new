@@ -153,8 +153,7 @@ function openProfile() {
     <button id="pfPwBtn" class="btn btn-block" style="margin-top:12px">修改登录密码</button>
     ${isAdmin ? `<hr class="section-divider" /><h3>管理与安全</h3>
       <div class="row"><button id="pfAdminPw" class="btn btn-ghost btn-sm">修改我的管理员密码</button>
-        <button id="pfLevel2" class="btn btn-ghost btn-sm">修改二级统一密码</button>
-        ${isSuper ? '<button id="pfSuperQr" class="btn btn-ghost btn-sm">生成授权二维码</button>' : ''}</div>` : ''}
+        <button id="pfLevel2" class="btn btn-ghost btn-sm">修改二级统一密码</button></div>` : ''}
   `, (close) => {
     $('#pfUpload').addEventListener('click', () => $('#pfFile').click());
     $('#pfFile').addEventListener('change', async (e) => { const f = e.target.files[0]; if (!f) return; try { const d = await fileToAvatar(f); await api('/api/profile/avatar', { method: 'POST', body: JSON.stringify({ avatar: d }) }); toast('头像已更新', 'ok'); await refreshNow(); $('#pfAvatar').innerHTML = avatarHtml(state.status.user.avatar, state.status.user.displayName, 'sz-96'); } catch (err) { toast(err.message, 'err'); } });
@@ -171,7 +170,6 @@ function openProfile() {
         [{ key: 'superPw', label: '超管账户密码', type: 'password' }, { key: 'superQr', label: '超管授权码', type: 'text' }, { key: 'superCard', label: '超管卡号', type: 'text' }],
         [{ key: 'newPassword', label: '新二级统一密码', type: 'password' }],
         async (obj, c) => { await api('/api/admin/level2-password', { method: 'POST', body: JSON.stringify(obj) }); toast('二级统一密码已修改', 'ok'); c(); }));
-      const sq = $('#pfSuperQr'); if (sq) sq.addEventListener('click', () => openCodeQr('授权二维码', '/api/admin/super-auth-code', '其他管理员扫描此码可完成超管授权。', 30000));
     }
     loadMyCards(isAdmin);
   });
@@ -216,7 +214,7 @@ function availableYuan(st) { return st.user.balanceYuan + st.user.freeYuan; }
 function accountCardHtml(st) {
   const isAdmin = st.caps.isAdmin, av = st.activeVisit, playing = !!av;
   if (isAdmin) {
-    return `<div class="card"><div class="acct-head"><h2>我的账户</h2></div>
+    return `<div class="card"><div class="acct-head"><h2>我的账户</h2><button id="qrBtn" class="qr-btn" title="我的二维码">▦</button></div>
       <div class="metric"><span class="label">本月在店时长</span><span class="bignum mono bal-deep" id="acctMonthly">${fmtHM(st.monthlyDurationSec || 0)}</span></div></div>`;
   }
   const bal = playing ? av.projectedBalanceYuan : st.user.balanceYuan;
@@ -258,7 +256,13 @@ function playCardHtml(st) {
     <h3 style="margin:16px 0 6px">价格（当前及后续时段）</h3>${priceSlotsHtml(st)}</div>`;
 }
 function wirePlayAccount() {
-  const qb = $('#qrBtn'); if (qb) qb.addEventListener('click', () => openCodeQr('我的充值二维码', '/api/recharge-code', '请管理员扫描此码为你充值，二维码每 10 秒刷新。', 10000));
+  const qb = $('#qrBtn'); if (qb) qb.addEventListener('click', () => {
+    const c = state.status.caps;
+    const tip = c.isSuper ? '可用于充值 / 门禁；同时是超级管理员授权二维码。每 15 秒刷新。'
+      : (c.isAdmin ? '可用于门禁与授权扫码（管理操作时由超管出示）。每 15 秒刷新。'
+        : '请管理员扫描此码为你充值；后续用于门禁。每 15 秒刷新。');
+    openCodeQr('我的二维码', '/api/my-code', tip, 15000);
+  });
   const eb = $('#endBtn'); if (eb) eb.addEventListener('click', async () => { try { const r = await api('/api/visit/end', { method: 'POST' }); toast(`已离店，时长 ${dur(r.durationSec)}${r.chargedYuan ? '，消费 ' + money(r.chargedYuan) : ''}`, 'ok'); await refreshNow(); } catch (e) { toast(e.message, 'err'); } });
   const sb = $('#startBtn'); if (sb) sb.addEventListener('click', async () => { try { await api('/api/visit/start', { method: 'POST' }); toast('进店成功！', 'ok'); await refreshNow(); } catch (e) { toast(e.message, 'err'); } });
 }

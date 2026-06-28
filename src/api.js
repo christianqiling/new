@@ -7,9 +7,8 @@ const payment = require('./payment');
 const xlsx = require('./xlsx');
 const { PERMISSIONS, ROLES } = auth;
 
-// 内存令牌：扫码充值令牌 / 超级管理员授权二维码
-const rechargeCodes = new Map();
-const superAuthCodes = new Map();
+// 个人二维码令牌：充值 / 门禁(后续) / 超级管理员授权 —— 二合一
+const personalCodes = new Map();
 
 function roleLabel(r) { return { SUPER_ADMIN: '超级管理员', SUB_ADMIN: '管理员', USER: '用户' }[r] || r; }
 function round2(n) { return Math.round(n * 100) / 100; }
@@ -58,8 +57,10 @@ function verifySuperCard(cardNo) {
   return !!(u && u.role === ROLES.SUPER_ADMIN);
 }
 function verifySuperQr(code) {
-  const c = String(code || '').trim(); const rec = superAuthCodes.get(c);
-  if (!rec) return false; if (rec.expires < Date.now()) { superAuthCodes.delete(c); return false; } return true;
+  const c = String(code || '').trim(); const rec = personalCodes.get(c);
+  if (!rec || rec.expires < Date.now()) return false;
+  const u = db.prepare('SELECT role FROM users WHERE id = ?').get(rec.userId);
+  return !!(u && u.role === ROLES.SUPER_ADMIN);
 }
 function verifySuperAuth(b) { b = b || {}; return verifySuperPw(b.superPw) || verifySuperCard(b.superCard) || verifySuperQr(b.superQr); }
 
@@ -424,14 +425,6 @@ function resetAdminPassword(ctx) {
   db.prepare('UPDATE users SET admin_password_hash = ? WHERE id = ?').run(auth.hashPassword(String(b.newPassword)), u.id);
   return ctx.json({ ok: true });
 }
-function superAuthCode(ctx) {
-  if (!ctx.user || ctx.user.role !== ROLES.SUPER_ADMIN) return ctx.fail('仅超级管理员可操作', 403);
-  const now = Date.now();
-  for (const [k, v] of superAuthCodes) if (v.expires < now) superAuthCodes.delete(k);
-  const code = 'SA' + crypto.randomBytes(6).toString('hex').toUpperCase();
-  superAuthCodes.set(code, { expires: now + 60000 });
-  return ctx.json({ code, ttl: 60 });
-}
 
 // ---------- 定价（含起步费） ----------
 function adminGetPricing(ctx) {
@@ -503,15 +496,16 @@ function rechargeStatus(ctx) {
 }
 
 // ---------- 扫码 / 刷卡充值 ----------
-function rechargeCode(ctx) {
+// 个人二维码（所有角色：账户卡同一处）。可用于充值/门禁；超管的同时作为授权码。
+function myCode(ctx) {
   if (!ctx.user) return ctx.fail('未登录', 401);
   const now = Date.now();
-  for (const [k, v] of rechargeCodes) if (v.expires < now) rechargeCodes.delete(k);
-  const code = 'RC' + crypto.randomBytes(6).toString('hex').toUpperCase();
-  rechargeCodes.set(code, { userId: ctx.user.id, expires: now + 30000 });
+  for (const [k, v] of personalCodes) if (v.expires < now) personalCodes.delete(k);
+  const code = 'UC' + crypto.randomBytes(6).toString('hex').toUpperCase();
+  personalCodes.set(code, { userId: ctx.user.id, expires: now + 30000 });
   return ctx.json({ code, ttl: 30 });
 }
-// 二维码内容(RC...) 或 卡号 均可
+// 二维码内容(UC...) 或 卡号 均可
 function adminRechargeByInput(ctx) {
   if (!requirePerm(ctx, PERMISSIONS.RECHARGE)) return;
   const val = String((ctx.body || {}).value || '').trim();
@@ -519,7 +513,7 @@ function adminRechargeByInput(ctx) {
   if (!val) return ctx.fail('请扫描/输入二维码或卡号');
   if (!(amt > 0)) return ctx.fail('请输入有效的充值金额');
   let userId = null, via = '';
-  const rec = rechargeCodes.get(val);
+  const rec = personalCodes.get(val);
   if (rec && rec.expires >= Date.now()) { userId = rec.userId; via = 'code'; }
   else { const c = db.prepare('SELECT user_id FROM cards WHERE card_no = ?').get(val); if (c) { userId = c.user_id; via = 'card'; } }
   if (!userId) return ctx.fail('无效的二维码/卡号（二维码可能已过期）');
@@ -528,7 +522,7 @@ function adminRechargeByInput(ctx) {
   const cents = Math.round(amt * 100), newBal = u.balance_cents + cents;
   db.prepare('UPDATE users SET balance_cents = ? WHERE id = ?').run(newBal, u.id);
   db.prepare("INSERT INTO transactions (user_id, type, amount_cents, operator_id, visit_id, note, created_at) VALUES (?, 'RECHARGE', ?, ?, NULL, ?, ?)").run(u.id, cents, ctx.user.id, via === 'card' ? '刷卡充值' : '扫码充值', nowIso());
-  if (via === 'code') rechargeCodes.delete(val);
+  if (via === 'code') personalCodes.delete(val);
   return ctx.json({ ok: true, username: displayName(u), balanceYuan: round2(newBal / 100), via });
 }
 
@@ -616,9 +610,9 @@ module.exports = {
   adminUsers, usersCreate, usersUpdate, usersDelete, usersResetAvatar,
   grantFree,
   adminUserCards, adminCardAdd, adminCardDelete,
-  rechargeCode, adminRechargeByInput,
+  myCode, adminRechargeByInput,
   setRole, setPermissions,
-  level2PasswordSet, myAdminPasswordSet, resetAdminPassword, superAuthCode,
+  level2PasswordSet, myAdminPasswordSet, resetAdminPassword,
   usersExport,
   announcementsList, announceCreate, announceDelete, announcePin,
   adminGetPricing, adminSetPricing, adminReports,
