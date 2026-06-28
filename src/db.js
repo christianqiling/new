@@ -91,6 +91,14 @@ function migrate() {
       created_at  TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS cards (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id    INTEGER NOT NULL,
+      card_no    TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_visits_status ON visits(status);
     CREATE INDEX IF NOT EXISTS idx_visits_user ON visits(user_id);
     CREATE INDEX IF NOT EXISTS idx_tx_created ON transactions(created_at);
@@ -103,6 +111,7 @@ function migrate() {
   const cols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
   if (!cols.includes('nickname')) db.exec("ALTER TABLE users ADD COLUMN nickname TEXT");
   if (!cols.includes('avatar')) db.exec("ALTER TABLE users ADD COLUMN avatar TEXT");
+  if (!cols.includes('free_cents')) db.exec("ALTER TABLE users ADD COLUMN free_cents REAL NOT NULL DEFAULT 0");
 }
 
 function seed() {

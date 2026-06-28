@@ -1,10 +1,14 @@
 'use strict';
+const crypto = require('node:crypto');
 const { db } = require('./db');
 const auth = require('./auth');
 const billing = require('./billing');
 const payment = require('./payment');
 const xlsx = require('./xlsx');
 const { PERMISSIONS, ROLES } = auth;
+
+// 扫码充值令牌（内存，短时有效）
+const rechargeCodes = new Map();
 
 function roleLabel(r) { return { SUPER_ADMIN: '超级管理员', SUB_ADMIN: '管理员', USER: '用户' }[r] || r; }
 
@@ -44,6 +48,8 @@ function pubUser(u) {
     permissions: safeParse(u.permissions),
     balanceCents: u.balance_cents,
     balanceYuan: round2(u.balance_cents / 100),
+    freeCents: u.free_cents || 0,
+    freeYuan: round2((u.free_cents || 0) / 100),
   };
 }
 
@@ -144,51 +150,49 @@ function status(ctx) {
       currentCostYuan: round2(p.currentCost / 100),
       projectedBalanceCents: p.projectedBalance == null ? null : round2(p.projectedBalance),
       projectedBalanceYuan: p.projectedBalance == null ? null : round2(p.projectedBalance / 100),
+      projectedFreeCents: p.projectedFree == null ? null : round2(p.projectedFree),
+      projectedFreeYuan: p.projectedFree == null ? null : round2(p.projectedFree / 100),
       rateNowCents: p.rateNow,
       rateNowYuan: round2(p.rateNow / 100),
     };
   }
 
-  // 在店人员（ACTIVE 访问 join 用户）
+  // 在店人员（ACTIVE 访问 join 用户）。全名对所有人可见（不再打码）。
   const inStore = db.prepare(`
-    SELECT v.start_time, v.billable, u.id AS uid, u.username, u.nickname, u.avatar, u.role
+    SELECT v.start_time, u.id AS uid, u.username, u.nickname, u.avatar, u.role
     FROM visits v JOIN users u ON u.id = v.user_id
     WHERE v.status = 'ACTIVE'
     ORDER BY v.start_time ASC
   `).all();
 
-  const viewerAdmin = auth.isAdmin(me);
   const people = inStore.map((r) => {
-    const isCustomer = r.billable === 1;
+    const isCustomer = r.role === ROLES.USER;
     const dn = (r.nickname && r.nickname.trim()) ? r.nickname.trim() : r.username;
-    const entry = {
+    return {
+      id: r.uid,
       isCustomer,
       role: r.role,
       avatar: r.avatar || null,
       initial: ([...dn][0] || '?'),
+      name: dn,
       startTime: r.start_time,
       elapsedSec: Math.max(0, Math.floor((Date.now() - Date.parse(r.start_time)) / 1000)),
     };
-    if (viewerAdmin) {
-      // 管理员可看到全部全名
-      entry.id = r.uid;
-      entry.name = dn;
-    } else {
-      // 顾客之间：顾客名字打码，管理员名字全员可见
-      entry.name = isCustomer ? maskName(dn) : dn;
-    }
-    return entry;
   });
 
   const store = {
-    userCount: inStore.filter((r) => r.billable === 1).length,
-    adminCount: inStore.filter((r) => r.billable === 0).length,
-    people,
+    userCount: people.filter((p) => p.isCustomer).length,
+    adminCount: people.filter((p) => !p.isCustomer).length,
+    customers: people.filter((p) => p.isCustomer),
+    admins: people.filter((p) => !p.isCustomer),
   };
 
   const rules = billing.getPricingRules().map((r) => ({
     startHour: r.start_hour, endHour: r.end_hour, rateCents: r.rate_cents, rateYuan: round2(r.rate_cents / 100),
   }));
+
+  const dRow = db.prepare("SELECT value FROM settings WHERE key = 'admin_discount'").get();
+  const adminDiscount = dRow ? (Number(dRow.value) || 0) : 0;
 
   return ctx.json({
     user: pubUser(me),
@@ -196,6 +200,7 @@ function status(ctx) {
     activeVisit,
     store,
     pricing: rules,
+    adminDiscount,
     serverTime: nowIso(),
   });
 }
@@ -206,12 +211,13 @@ function visitStart(ctx) {
   if (!ctx.user) return ctx.fail('未登录', 401);
   const me = db.prepare('SELECT * FROM users WHERE id = ?').get(ctx.user.id);
   if (activeVisitOf(me.id)) return ctx.fail('你已在店内，无需重复进店');
-  const billable = me.role === ROLES.USER ? 1 : 0;
-  if (billable && me.balance_cents <= 0) return ctx.fail('余额不足，请先联系管理员充值');
+  // 进店要求 可用额度(免费额度 + 余额) > 0
+  const available = (me.free_cents || 0) + me.balance_cents;
+  if (available <= 0) return ctx.fail('可用额度不足（免费额度 + 余额需大于 0），请先充值');
   const t = nowIso();
   db.prepare(
-    "INSERT INTO visits (user_id, start_time, end_time, last_tick, charged_cents, status, billable, end_reason) VALUES (?, ?, NULL, ?, 0, 'ACTIVE', ?, NULL)"
-  ).run(me.id, t, t, billable);
+    "INSERT INTO visits (user_id, start_time, end_time, last_tick, charged_cents, status, billable, end_reason) VALUES (?, ?, NULL, ?, 0, 'ACTIVE', 1, NULL)"
+  ).run(me.id, t, t);
   return ctx.json({ ok: true });
 }
 
@@ -329,7 +335,7 @@ function usersCreate(ctx) {
 function usersUpdate(ctx) {
   if (!requirePerm(ctx, PERMISSIONS.MANAGE_USERS)) return;
   if (!verifyOpOrFail(ctx)) return;
-  const { userId, username, qq, nickname, balanceYuan } = ctx.body || {};
+  const { userId, username, qq, nickname, balanceYuan, freeYuan } = ctx.body || {};
   const u = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(userId));
   if (!u) return ctx.fail('用户不存在');
 
@@ -344,12 +350,18 @@ function usersUpdate(ctx) {
   let newBalance = u.balance_cents;
   if (balanceYuan != null && balanceYuan !== '') {
     const b = Number(balanceYuan);
-    if (!Number.isFinite(b) || b < 0) return ctx.fail('余额不合法');
+    if (!Number.isFinite(b)) return ctx.fail('余额不合法');
     newBalance = Math.round(b * 100);
   }
+  let newFree = u.free_cents || 0;
+  if (freeYuan != null && freeYuan !== '') {
+    const f = Number(freeYuan);
+    if (!Number.isFinite(f) || f < 0) return ctx.fail('免费额度不合法');
+    newFree = Math.round(f * 100);
+  }
 
-  db.prepare('UPDATE users SET username = ?, qq = ?, nickname = ?, balance_cents = ? WHERE id = ?')
-    .run(uname, nqq, nick, newBalance, u.id);
+  db.prepare('UPDATE users SET username = ?, qq = ?, nickname = ?, balance_cents = ?, free_cents = ? WHERE id = ?')
+    .run(uname, nqq, nick, newBalance, newFree, u.id);
 
   // 余额变动记录一笔调整流水（不计入营业额）
   const delta = newBalance - u.balance_cents;
@@ -558,16 +570,17 @@ function rechargeStatus(ctx) {
 
 // ---------- 流水明细 ----------
 
-// RECHARGE / ADJUST 逐条；CHARGE 按访问(visit)聚合为一条。
+// RECHARGE / ADJUST 逐条；CHARGE、FREE_USE 各按访问(visit)聚合为一条。
 function buildTxList(rows) {
   const items = [];
-  const chargeByVisit = new Map();
+  const byVisit = new Map(); // key: type|visitId
   for (const r of rows) {
-    if (r.type === 'CHARGE' && r.visit_id) {
-      const g = chargeByVisit.get(r.visit_id) || { amount: 0, last: r.created_at, username: r.username, visitId: r.visit_id };
+    if ((r.type === 'CHARGE' || r.type === 'FREE_USE') && r.visit_id) {
+      const key = r.type + '|' + r.visit_id;
+      const g = byVisit.get(key) || { type: r.type, amount: 0, last: r.created_at, username: r.username, visitId: r.visit_id };
       g.amount += r.amount_cents;
       if (r.created_at > g.last) g.last = r.created_at;
-      chargeByVisit.set(r.visit_id, g);
+      byVisit.set(key, g);
     } else {
       items.push({
         type: r.type, amountYuan: round2(r.amount_cents / 100), time: r.created_at,
@@ -575,8 +588,11 @@ function buildTxList(rows) {
       });
     }
   }
-  for (const g of chargeByVisit.values()) {
-    items.push({ type: 'CHARGE', amountYuan: round2(g.amount / 100), time: g.last, note: '游玩消费', username: g.username, visitId: g.visitId });
+  for (const g of byVisit.values()) {
+    items.push({
+      type: g.type, amountYuan: round2(g.amount / 100), time: g.last,
+      note: g.type === 'FREE_USE' ? '免费额度抵扣' : '游玩消费', username: g.username, visitId: g.visitId,
+    });
   }
   items.sort((a, b) => (a.time < b.time ? 1 : -1));
   return items;
@@ -591,7 +607,7 @@ function myTransactions(ctx) {
 function adminTransactions(ctx) {
   if (!requirePerm(ctx, PERMISSIONS.VIEW_REPORTS)) return;
   const userId = ctx.query.userId ? Number(ctx.query.userId) : null;
-  const type = ctx.query.type && ['RECHARGE', 'CHARGE', 'ADJUST'].includes(ctx.query.type) ? ctx.query.type : null;
+  const type = ctx.query.type && ['RECHARGE', 'CHARGE', 'ADJUST', 'FREE_USE'].includes(ctx.query.type) ? ctx.query.type : null;
   let sql = 'SELECT t.*, u.username, u.nickname FROM transactions t JOIN users u ON u.id = t.user_id WHERE 1=1';
   const args = [];
   if (userId) { sql += ' AND t.user_id = ?'; args.push(userId); }
@@ -607,7 +623,7 @@ function usersExport(ctx) {
   if (!ctx.user || !auth.hasPermission(ctx.user, PERMISSIONS.MANAGE_USERS)) return ctx.fail('无权限', 403);
   const rows = db.prepare('SELECT * FROM users ORDER BY id ASC').all();
   const activeIds = new Set(db.prepare("SELECT user_id FROM visits WHERE status = 'ACTIVE'").all().map((r) => r.user_id));
-  const header = ['ID', '用户名', '昵称', 'QQ号', '身份', '余额(元)', '状态', '权限', '注册时间'];
+  const header = ['ID', '用户名', '昵称', 'QQ号', '身份', '余额(元)', '免费额度(元)', '状态', '权限', '注册时间'];
   const data = [header.map((h) => ({ t: 's', v: h }))];
   for (const u of rows) {
     data.push([
@@ -617,6 +633,7 @@ function usersExport(ctx) {
       { t: 's', v: u.qq || '' },
       { t: 's', v: roleLabel(u.role) },
       { t: 'n', v: round2(u.balance_cents / 100) },
+      { t: 'n', v: round2((u.free_cents || 0) / 100) },
       { t: 's', v: activeIds.has(u.id) ? '在店' : '离店' },
       { t: 's', v: safeParse(u.permissions).join(',') },
       { t: 's', v: u.created_at || '' },
@@ -669,12 +686,116 @@ function announcePin(ctx) {
   return ctx.json({ ok: true });
 }
 
+// ---------- 免费额度发放 ----------
+
+// 单个用户的免费额度通过 usersUpdate 的 freeYuan 设置；此处为"统一发放"(给所有顾客追加)
+function grantFreeAll(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.MANAGE_USERS)) return;
+  if (!verifyOpOrFail(ctx)) return;
+  const amt = Number((ctx.body || {}).amountYuan);
+  if (!Number.isFinite(amt) || amt <= 0) return ctx.fail('请填写有效的发放金额');
+  const cents = Math.round(amt * 100);
+  const users = db.prepare("SELECT id, free_cents FROM users WHERE role = 'USER'").all();
+  const upd = db.prepare('UPDATE users SET free_cents = ? WHERE id = ?');
+  for (const u of users) upd.run((u.free_cents || 0) + cents, u.id);
+  return ctx.json({ ok: true, count: users.length });
+}
+
+// ---------- 管理员优惠（超级管理员） ----------
+
+function setAdminDiscount(ctx) {
+  if (!ctx.user || ctx.user.role !== ROLES.SUPER_ADMIN) return ctx.fail('仅超级管理员可操作', 403);
+  const d = Number((ctx.body || {}).discount);
+  if (!Number.isFinite(d) || d < 0 || d > 100) return ctx.fail('优惠百分比需在 0-100 之间');
+  db.prepare("INSERT INTO settings (key, value) VALUES ('admin_discount', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(d));
+  return ctx.json({ ok: true });
+}
+
+// ---------- 扫码充值 ----------
+
+function rechargeCode(ctx) {
+  if (!ctx.user) return ctx.fail('未登录', 401);
+  // 清理过期
+  const now = Date.now();
+  for (const [k, v] of rechargeCodes) if (v.expires < now) rechargeCodes.delete(k);
+  const code = 'RC' + crypto.randomBytes(6).toString('hex').toUpperCase();
+  rechargeCodes.set(code, { userId: ctx.user.id, expires: now + 30000 });
+  return ctx.json({ code, ttl: 30 });
+}
+
+function adminRechargeByCode(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.RECHARGE)) return;
+  const code = String((ctx.body || {}).code || '').trim();
+  const rec = rechargeCodes.get(code);
+  if (!rec || rec.expires < Date.now()) { rechargeCodes.delete(code); return ctx.fail('二维码无效或已过期，请让顾客刷新后重试'); }
+  const amt = Number((ctx.body || {}).amountYuan);
+  if (!Number.isFinite(amt) || amt <= 0) return ctx.fail('请填写有效的充值金额');
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(rec.userId);
+  if (!u) return ctx.fail('用户不存在');
+  const cents = Math.round(amt * 100);
+  const newBal = u.balance_cents + cents;
+  db.prepare('UPDATE users SET balance_cents = ? WHERE id = ?').run(newBal, u.id);
+  db.prepare("INSERT INTO transactions (user_id, type, amount_cents, operator_id, visit_id, note, created_at) VALUES (?, 'RECHARGE', ?, ?, NULL, '扫码充值', ?)").run(u.id, cents, ctx.user.id, nowIso());
+  rechargeCodes.delete(code); // 一次性
+  return ctx.json({ ok: true, username: displayName(u), balanceYuan: round2(newBal / 100) });
+}
+
+// ---------- 卡片（每人至多 3 张） ----------
+
+function cardRow(c) { return { id: c.id, cardNo: c.card_no, createdAt: c.created_at }; }
+
+function myCards(ctx) {
+  if (!ctx.user) return ctx.fail('未登录', 401);
+  const rows = db.prepare('SELECT * FROM cards WHERE user_id = ? ORDER BY id ASC').all(ctx.user.id);
+  return ctx.json({ cards: rows.map(cardRow) });
+}
+
+function cardDeleteSelf(ctx) {
+  if (!ctx.user) return ctx.fail('未登录', 401);
+  const c = db.prepare('SELECT * FROM cards WHERE id = ?').get(Number((ctx.body || {}).cardId));
+  if (!c || c.user_id !== ctx.user.id) return ctx.fail('卡片不存在');
+  db.prepare('DELETE FROM cards WHERE id = ?').run(c.id);
+  return ctx.json({ ok: true });
+}
+
+function adminUserCards(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.MANAGE_USERS)) return;
+  const rows = db.prepare('SELECT * FROM cards WHERE user_id = ? ORDER BY id ASC').all(Number(ctx.query.userId));
+  return ctx.json({ cards: rows.map(cardRow) });
+}
+
+function adminCardAdd(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.MANAGE_USERS)) return;
+  if (!verifyOpOrFail(ctx)) return;
+  const { userId, cardNo } = ctx.body || {};
+  const no = String(cardNo || '').trim();
+  if (!no) return ctx.fail('请输入卡号');
+  const u = db.prepare('SELECT id FROM users WHERE id = ?').get(Number(userId));
+  if (!u) return ctx.fail('用户不存在');
+  const cnt = db.prepare('SELECT COUNT(*) AS c FROM cards WHERE user_id = ?').get(Number(userId)).c;
+  if (cnt >= 3) return ctx.fail('每位用户最多 3 张卡片');
+  if (db.prepare('SELECT id FROM cards WHERE card_no = ?').get(no)) return ctx.fail('该卡号已被绑定');
+  db.prepare('INSERT INTO cards (user_id, card_no, created_at) VALUES (?, ?, ?)').run(Number(userId), no, nowIso());
+  return ctx.json({ ok: true });
+}
+
+function adminCardDelete(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.MANAGE_USERS)) return;
+  if (!verifyOpOrFail(ctx)) return;
+  db.prepare('DELETE FROM cards WHERE id = ?').run(Number((ctx.body || {}).cardId));
+  return ctx.json({ ok: true });
+}
+
 module.exports = {
   register, login, logout, status, checkUsername,
   visitStart, visitEnd,
   profileUpdate, profileAvatar, profileAvatarReset, changePassword,
+  myCards, cardDeleteSelf,
   adminEndVisit,
   adminUsers, usersCreate, usersUpdate, usersDelete, usersResetAvatar,
+  grantFreeAll, setAdminDiscount,
+  adminUserCards, adminCardAdd, adminCardDelete,
+  rechargeCode, adminRechargeByCode,
   setRole, setPermissions, opPasswordSet,
   usersExport,
   announcementsList, announceCreate, announceDelete, announcePin,

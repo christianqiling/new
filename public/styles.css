@@ -1,22 +1,25 @@
 :root {
-  --bg: #eef1f7;
-  --bg-grad: #e4ebfa;
+  --bg: #ffffff;
+  --bg-grad: #eaf6ff;
   --panel: #ffffff;
-  --panel-2: #f4f6fb;
-  --line: #e2e7f0;
-  --text: #1f2733;
-  --muted: #76819a;
-  --primary: #3b6fe0;
-  --primary-dark: #2f5bc4;
+  --panel-2: #f0f8ff;
+  --line: #d6e8f5;
+  --text: #17324a;
+  --muted: #6b7c91;
+  --theme: #D7EEFF;
+  --theme-deep: #8fc4ee;
+  --primary: #D7EEFF;
+  --primary-text: #14507e;
+  --primary-dark: #b9e0fb;
   --green: #19a974;
   --red: #e5484d;
   --amber: #e8920c;
   --radius: 14px;
-  --shadow: 0 1px 3px rgba(20,30,60,.06), 0 6px 20px rgba(20,30,60,.05);
+  --shadow: 0 1px 3px rgba(20,60,110,.06), 0 6px 20px rgba(20,60,110,.06);
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; }
+html, body { margin: 0; padding: 0; max-width: 100%; overflow-x: hidden; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   background: radial-gradient(1200px 600px at 75% -10%, var(--bg-grad) 0%, var(--bg) 55%);
@@ -29,18 +32,18 @@ body {
 #topbar {
   display: flex; align-items: center; justify-content: space-between;
   padding: 13px 22px; border-bottom: 1px solid var(--line);
-  background: rgba(255,255,255,.85); backdrop-filter: blur(8px);
+  background: rgba(215,238,255,.78); backdrop-filter: blur(8px);
   position: sticky; top: 0; z-index: 10;
 }
 .brand { font-weight: 700; font-size: 18px; letter-spacing: .3px; color: var(--text); }
 .topbar-right { display: flex; align-items: center; gap: 12px; }
-.whoami { color: var(--muted); font-size: 14px; display:flex; align-items:center; gap:8px; }
+.whoami { color: var(--text); font-size: 14px; display:flex; align-items:center; gap:8px; }
 .badge { display:inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 .badge.super { background: rgba(229,72,77,.12); color: var(--red); }
-.badge.sub { background: rgba(232,146,12,.14); color: var(--amber); }
-.badge.user { background: rgba(59,111,224,.12); color: var(--primary); }
+.badge.sub { background: rgba(232,146,12,.16); color: var(--amber); }
+.badge.user { background: rgba(20,80,126,.12); color: var(--primary-text); }
 
-#content { max-width: 1080px; margin: 0 auto; padding: 26px 18px 60px; }
+#content { max-width: 1080px; margin: 0 auto; padding: 26px 18px 60px; width: 100%; }
 
 /* 卡片 */
 .card {
@@ -55,15 +58,15 @@ body {
 
 /* 按钮 */
 .btn {
-  border: none; border-radius: 10px; padding: 11px 18px; font-size: 14px;
-  font-weight: 600; cursor: pointer; color: #fff; background: var(--primary);
-  transition: .15s; font-family: inherit;
+  border: 1px solid transparent; border-radius: 10px; padding: 11px 18px; font-size: 14px;
+  font-weight: 600; cursor: pointer; color: var(--primary-text); background: var(--primary);
+  transition: background .15s, filter .15s, transform .08s; font-family: inherit;
 }
 .btn:hover { background: var(--primary-dark); }
-.btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn-green { background: var(--green); }
+.btn:disabled { opacity: .55; cursor: not-allowed; }
+.btn-green { background: var(--green); color: #fff; }
 .btn-green:hover { filter: brightness(1.06); }
-.btn-red { background: var(--red); }
+.btn-red { background: var(--red); color: #fff; }
 .btn-red:hover { filter: brightness(1.06); }
 .btn-ghost { background: #fff; border: 1px solid var(--line); color: var(--muted); }
 .btn-ghost:hover { background: var(--panel-2); color: var(--text); }
@@ -86,7 +89,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); box-sha
 .auth-sub { text-align:center; color: var(--muted); margin-bottom: 24px; }
 .tabs { display:flex; background: var(--panel-2); border-radius: 10px; padding: 4px; margin-bottom: 18px; }
 .tabs button { flex:1; border:none; background:transparent; color: var(--muted); padding: 10px; border-radius: 8px; cursor:pointer; font-weight:600; font-family: inherit; font-size: 14px; }
-.tabs button.active { background: var(--primary); color:#fff; }
+.tabs button.active { background: var(--theme-deep); color: var(--primary-text); }
 
 /* 大数字 */
 .bignum { font-size: 44px; font-weight: 800; letter-spacing: .5px; }
@@ -131,7 +134,7 @@ tr:last-child td { border-bottom: none; }
 .adminnav { display:flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
 .adminnav.sub { margin-bottom: 16px; }
 .adminnav button { background: var(--panel); border:1px solid var(--line); color: var(--muted); padding: 9px 16px; border-radius: 10px; cursor:pointer; font-weight:600; font-family:inherit; font-size:14px; box-shadow: var(--shadow); }
-.adminnav button.active { background: var(--primary); color:#fff; border-color: var(--primary); }
+.adminnav button.active { background: var(--theme-deep); color: var(--primary-text); border-color: var(--theme-deep); }
 
 /* 复选权限 */
 .perm-grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); gap: 10px; margin: 10px 0; }
@@ -173,7 +176,7 @@ small.hint { color: var(--muted); font-size: 12px; }
 .pay-methods { display:flex; gap: 10px; flex-wrap: wrap; margin: 6px 0 4px; }
 .pay-method { flex: 1; min-width: 110px; border: 1px solid var(--line); background: var(--panel-2);
   border-radius: 10px; padding: 12px; cursor: pointer; text-align: center; font-weight: 600; font-size: 14px; }
-.pay-method.active { border-color: var(--primary); background: rgba(59,111,224,.1); color: var(--primary); }
+.pay-method.active { border-color: var(--theme-deep); background: rgba(143,196,238,.18); color: var(--primary-text); }
 .pay-method.disabled { opacity: .45; cursor: not-allowed; }
 
 /* 流水类型 */
@@ -262,4 +265,54 @@ tbody tr:hover { background: var(--panel-2); }
   .filters > div { flex: 1 1 auto; }
   .search-box { max-width: 100%; }
   .avatar.sz-96 { width: 76px; height: 76px; font-size: 30px; }
+}
+
+
+/* 账户头部 + 二维码按钮 + 免费额度 */
+.acct-head { display: flex; align-items: center; gap: 10px; }
+.acct-head h2 { margin: 0; }
+.qr-btn { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 2px 9px; cursor: pointer; font-size: 17px; line-height: 1.4; }
+.qr-btn:hover { background: var(--panel-2); }
+.free-amt { color: var(--amber); }
+.acct-metrics { display: flex; gap: 28px; flex-wrap: wrap; }
+
+/* 二维码弹窗 */
+.qr-wrap { text-align: center; }
+.qr-wrap canvas { border: 1px solid var(--line); border-radius: 10px; }
+.qr-tip { color: var(--muted); font-size: 12px; margin-top: 12px; }
+.qr-code-text { font-family: monospace; color: var(--muted); font-size: 12px; margin-top: 6px; word-break: break-all; }
+
+/* 折叠列表（在店人数） */
+.collapse { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
+.collapse-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; cursor: pointer; background: var(--panel-2); font-weight: 600; user-select: none; }
+.collapse-head .cnt { color: var(--primary-text); font-weight: 700; }
+.collapse-head .chev { transition: transform .2s ease; color: var(--muted); font-size: 12px; }
+.collapse.open .chev { transform: rotate(90deg); }
+.collapse-body { display: none; padding: 4px 14px 10px; }
+.collapse.open .collapse-body { display: block; }
+.person-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.person-row:last-child { border-bottom: none; }
+.person-row .pinfo { flex: 1; min-width: 0; }
+.person-row .pname { font-weight: 600; }
+.person-row .pmeta { color: var(--muted); font-size: 12px; }
+
+/* 卡片管理 */
+.card-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.card-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+.card-item .cno { font-family: monospace; font-weight: 600; word-break: break-all; }
+
+/* 头像渐变改用主题蓝 */
+.avatar { background: linear-gradient(135deg, #7fb9ee, #4f93d6); }
+
+/* 移动端进一步收窄，杜绝横向溢出 */
+@media (max-width: 640px) {
+  #content { padding: 12px 8px 44px; }
+  .acct-metrics { gap: 18px; }
+  .people-list { gap: 8px; }
+  .chip { max-width: 100%; }
+  .ann-content, .card-item .cno { word-break: break-word; }
+  .metrics { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 380px) {
+  .metrics { grid-template-columns: 1fr; }
 }

@@ -69,12 +69,23 @@ function chargeUntilBudget(rules, fromMs, toMs, budget) {
 
 const getUserStmt = db.prepare('SELECT * FROM users WHERE id = ?');
 const updateBalanceStmt = db.prepare('UPDATE users SET balance_cents = ? WHERE id = ?');
+const updateFreeBalStmt = db.prepare('UPDATE users SET free_cents = ?, balance_cents = ? WHERE id = ?');
 const updateVisitStmt = db.prepare(
   'UPDATE visits SET end_time = ?, last_tick = ?, charged_cents = ?, status = ?, end_reason = ? WHERE id = ?'
 );
 const insertTxStmt = db.prepare(
   'INSERT INTO transactions (user_id, type, amount_cents, operator_id, visit_id, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
 );
+
+// 管理员计费折扣系数：USER 无折扣；管理员按超级管理员设置的优惠百分比。
+function getDiscountFactor(role) {
+  if (role === 'USER') return 1;
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'admin_discount'").get();
+  let d = row ? Number(row.value) : 0;
+  if (!Number.isFinite(d)) d = 0;
+  d = Math.max(0, Math.min(100, d));
+  return 1 - d / 100;
+}
 
 // 结算一个进行中的计费访问，从 last_tick 扣费到 upToMs。
 // endManually=true 表示用户主动离店（结算后强制结束）。
@@ -103,11 +114,17 @@ function settleVisit(visit, upToMs, endManually = false) {
     return visit;
   }
 
-  // 全额计费：余额可扣成负数，不会因余额耗尽自动结束（仅手动/管理员离店）
-  const cost = costForInterval(rules, fromMs, now);
+  // 计费：先扣免费额度，再扣余额（余额可为负，不因耗尽自动结束）。管理员按优惠系数计费。
+  const factor = getDiscountFactor(user.role);
+  const cost = costForInterval(rules, fromMs, now) * factor;
   if (cost > 0) {
-    updateBalanceStmt.run(user.balance_cents - cost, user.id);
-    insertTxStmt.run(user.id, 'CHARGE', cost, null, visit.id, '游玩计费', new Date(now).toISOString());
+    const free = user.free_cents || 0;
+    const fromFree = Math.min(free, cost);
+    const fromBal = cost - fromFree;
+    updateFreeBalStmt.run(free - fromFree, user.balance_cents - fromBal, user.id);
+    const iso = new Date(now).toISOString();
+    if (fromBal > 1e-9) insertTxStmt.run(user.id, 'CHARGE', fromBal, null, visit.id, '游玩消费', iso);
+    if (fromFree > 1e-9) insertTxStmt.run(user.id, 'FREE_USE', fromFree, null, visit.id, '免费额度抵扣', iso);
     visit.charged_cents += cost;
   }
 
@@ -140,14 +157,18 @@ function projectVisit(visit, nowMs = Date.now()) {
   const startMs = Date.parse(visit.start_time);
   const elapsedSec = Math.max(0, Math.floor((nowMs - startMs) / 1000));
   if (!visit.billable) {
-    return { elapsedSec, currentCost: 0, projectedBalance: null, rateNow: 0 };
+    return { elapsedSec, currentCost: 0, projectedBalance: null, projectedFree: null, rateNow: 0 };
   }
   const user = getUserStmt.get(visit.user_id);
-  const sinceTick = costForInterval(rules, Date.parse(visit.last_tick), nowMs);
-  const currentCost = visit.charged_cents + sinceTick;
-  const projectedBalance = user.balance_cents - sinceTick; // 可为负
-  const rateNow = rateForHour(rules, new Date(nowMs).getHours());
-  return { elapsedSec, currentCost, projectedBalance, rateNow };
+  const factor = getDiscountFactor(user.role);
+  const sinceCost = costForInterval(rules, Date.parse(visit.last_tick), nowMs) * factor;
+  const free = user.free_cents || 0;
+  const freeUsed = Math.min(free, sinceCost);
+  const currentCost = visit.charged_cents + sinceCost;
+  const projectedFree = free - freeUsed;
+  const projectedBalance = user.balance_cents - (sinceCost - freeUsed); // 可为负
+  const rateNow = rateForHour(rules, new Date(nowMs).getHours()) * factor;
+  return { elapsedSec, currentCost, projectedFree, projectedBalance, rateNow };
 }
 
 module.exports = {
