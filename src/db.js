@@ -76,6 +76,11 @@ function migrate() {
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
 
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    );
+
     CREATE INDEX IF NOT EXISTS idx_visits_status ON visits(status);
     CREATE INDEX IF NOT EXISTS idx_visits_user ON visits(user_id);
     CREATE INDEX IF NOT EXISTS idx_tx_created ON transactions(created_at);
@@ -83,6 +88,11 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions(user_id);
     CREATE INDEX IF NOT EXISTS idx_orders_no ON payment_orders(order_no);
   `);
+
+  // 为既有数据库补充新增列（昵称 / 头像）
+  const cols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+  if (!cols.includes('nickname')) db.exec("ALTER TABLE users ADD COLUMN nickname TEXT");
+  if (!cols.includes('avatar')) db.exec("ALTER TABLE users ADD COLUMN avatar TEXT");
 }
 
 function seed() {
@@ -104,6 +114,14 @@ function seed() {
   if (ruleCount === 0) {
     db.prepare('INSERT INTO pricing_rules (start_hour, end_hour, rate_cents) VALUES (?, ?, ?)').run(0, 24, 1000);
     console.log('[seed] 已创建默认时价: 全天 10 元/小时');
+  }
+
+  // 种子操作密码（用于用户列表的敏感操作：修改/删除用户信息）
+  const op = db.prepare("SELECT value FROM settings WHERE key = 'op_password'").get();
+  if (!op) {
+    const opPass = process.env.OP_PASSWORD || '123456';
+    db.prepare("INSERT INTO settings (key, value) VALUES ('op_password', ?)").run(hashPassword(opPass));
+    console.log(`[seed] 已创建管理操作密码: ${opPass} (用于修改/删除用户，请尽快修改)`);
   }
 }
 

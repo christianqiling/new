@@ -43,7 +43,7 @@ function readBody(req) {
     let data = '';
     req.on('data', (c) => {
       data += c;
-      if (data.length > 1e6) req.destroy(); // 限制 1MB
+      if (data.length > 4e6) req.destroy(); // 限制 4MB（含头像上传）
     });
     req.on('end', () => {
       if (!data) return resolve({});
@@ -92,13 +92,19 @@ const routes = {
   'POST /api/visit/start': api.visitStart,
   'POST /api/visit/end': api.visitEnd,
   'POST /api/change-password': api.changePassword,
+  'POST /api/profile/update': api.profileUpdate,
+  'POST /api/profile/avatar': api.profileAvatar,
+  'POST /api/profile/avatar/reset': api.profileAvatarReset,
   'GET /api/transactions': api.myTransactions,
   'GET /api/recharge/methods': api.rechargeMethods,
   'POST /api/recharge/create': api.rechargeCreate,
   'POST /api/recharge/confirm': api.rechargeConfirm,
   'GET /api/recharge/status': api.rechargeStatus,
   'GET /api/admin/users': api.adminUsers,
-  'POST /api/admin/recharge': api.adminRecharge,
+  'POST /api/admin/users/create': api.usersCreate,
+  'POST /api/admin/users/update': api.usersUpdate,
+  'POST /api/admin/users/delete': api.usersDelete,
+  'POST /api/admin/users/reset-avatar': api.usersResetAvatar,
   'POST /api/admin/end-visit': api.adminEndVisit,
   'GET /api/admin/transactions': api.adminTransactions,
   'GET /api/admin/pricing': api.adminGetPricing,
@@ -106,6 +112,7 @@ const routes = {
   'GET /api/admin/reports': api.adminReports,
   'POST /api/admin/set-role': api.setRole,
   'POST /api/admin/set-permissions': api.setPermissions,
+  'POST /api/admin/op-password': api.opPasswordSet,
 };
 
 const server = http.createServer(async (req, res) => {

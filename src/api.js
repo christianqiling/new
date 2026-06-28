@@ -17,11 +17,26 @@ function localDate(d) {
   return `${y}-${m}-${day}`;
 }
 
+// 展示名：优先昵称，否则用户名
+function displayName(u) {
+  const n = (u.nickname || '').trim();
+  return n || u.username;
+}
+// 姓名打码：取首字符 + **
+function maskName(name) {
+  const a = [...String(name || '')];
+  if (!a.length) return '**';
+  return a[0] + '**';
+}
+
 function pubUser(u) {
   return {
     id: u.id,
     username: u.username,
     qq: u.qq || '',
+    nickname: u.nickname || '',
+    displayName: displayName(u),
+    avatar: u.avatar || null,
     role: u.role,
     permissions: safeParse(u.permissions),
     balanceCents: u.balance_cents,
@@ -44,6 +59,21 @@ function activeVisitOf(userId) {
   return db.prepare("SELECT * FROM visits WHERE user_id = ? AND status = 'ACTIVE' ORDER BY id DESC LIMIT 1").get(userId);
 }
 
+// ---------- 操作密码（敏感的用户管理操作需校验） ----------
+function getOpHash() {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'op_password'").get();
+  return row ? row.value : null;
+}
+function verifyOpOrFail(ctx) {
+  const pw = (ctx.body || {}).opPassword;
+  const hash = getOpHash();
+  if (!hash || !auth.verifyPassword(pw || '', hash)) {
+    ctx.fail('操作密码错误', 403);
+    return false;
+  }
+  return true;
+}
+
 // ---------- 鉴权相关 ----------
 
 function createSession(ctx, userId) {
@@ -54,7 +84,7 @@ function createSession(ctx, userId) {
 }
 
 function register(ctx) {
-  const { username, password, qq } = ctx.body || {};
+  const { username, password, qq, nickname } = ctx.body || {};
   if (!username || !String(username).trim()) return ctx.fail('请填写用户名');
   if (!password || String(password).length < 4) return ctx.fail('密码至少 4 位');
   if (!qq || !String(qq).trim()) return ctx.fail('请填写 QQ 号');
@@ -62,8 +92,8 @@ function register(ctx) {
   const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(uname);
   if (exists) return ctx.fail('该用户名已被注册');
   const info = db.prepare(
-    "INSERT INTO users (username, qq, password_hash, role, permissions, balance_cents, created_at) VALUES (?, ?, ?, 'USER', '[]', 0, ?)"
-  ).run(uname, String(qq).trim(), auth.hashPassword(password), nowIso());
+    "INSERT INTO users (username, qq, nickname, password_hash, role, permissions, balance_cents, created_at) VALUES (?, ?, ?, ?, 'USER', '[]', 0, ?)"
+  ).run(uname, String(qq).trim(), (nickname ? String(nickname).trim() : ''), auth.hashPassword(password), nowIso());
   createSession(ctx, info.lastInsertRowid);
   const u = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   return ctx.json({ ok: true, user: pubUser(u) });
@@ -110,31 +140,40 @@ function status(ctx) {
 
   // 在店人员（ACTIVE 访问 join 用户）
   const inStore = db.prepare(`
-    SELECT v.id AS vid, v.start_time, v.billable, u.id AS uid, u.username, u.role
+    SELECT v.start_time, v.billable, u.id AS uid, u.username, u.nickname, u.avatar, u.role
     FROM visits v JOIN users u ON u.id = v.user_id
     WHERE v.status = 'ACTIVE'
     ORDER BY v.start_time ASC
   `).all();
 
-  const customers = inStore.filter((r) => r.billable === 1);
-  const admins = inStore.filter((r) => r.billable === 0);
-
-  const store = {
-    userCount: customers.length,
-    adminCount: admins.length,
-    adminNames: admins.map((a) => a.username), // 所有人可见管理员名字
-  };
-
-  // 仅管理员可见全部在店人名
-  if (auth.isAdmin(me)) {
-    store.people = inStore.map((r) => ({
-      id: r.uid,
-      username: r.username,
+  const viewerAdmin = auth.isAdmin(me);
+  const people = inStore.map((r) => {
+    const isCustomer = r.billable === 1;
+    const dn = (r.nickname && r.nickname.trim()) ? r.nickname.trim() : r.username;
+    const entry = {
+      isCustomer,
       role: r.role,
+      avatar: r.avatar || null,
+      initial: ([...dn][0] || '?'),
       startTime: r.start_time,
       elapsedSec: Math.max(0, Math.floor((Date.now() - Date.parse(r.start_time)) / 1000)),
-    }));
-  }
+    };
+    if (viewerAdmin) {
+      // 管理员可看到全部全名
+      entry.id = r.uid;
+      entry.name = dn;
+    } else {
+      // 顾客之间：顾客名字打码，管理员名字全员可见
+      entry.name = isCustomer ? maskName(dn) : dn;
+    }
+    return entry;
+  });
+
+  const store = {
+    userCount: inStore.filter((r) => r.billable === 1).length,
+    adminCount: inStore.filter((r) => r.billable === 0).length,
+    people,
+  };
 
   const rules = billing.getPricingRules().map((r) => ({
     startHour: r.start_hour, endHour: r.end_hour, rateCents: r.rate_cents, rateYuan: round2(r.rate_cents / 100),
@@ -180,7 +219,56 @@ function visitEnd(ctx) {
   });
 }
 
-// ---------- 管理员：用户与充值 ----------
+// ---------- 我的信息（全角色） ----------
+
+function profileUpdate(ctx) {
+  if (!ctx.user) return ctx.fail('未登录', 401);
+  const { username, nickname } = ctx.body || {};
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(ctx.user.id);
+  const uname = username != null ? String(username).trim() : u.username;
+  if (!uname) return ctx.fail('用户名不能为空');
+  if (uname !== u.username) {
+    const exists = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(uname, u.id);
+    if (exists) return ctx.fail('该用户名已被占用');
+  }
+  const nick = nickname != null ? String(nickname).trim() : (u.nickname || '');
+  db.prepare('UPDATE users SET username = ?, nickname = ? WHERE id = ?').run(uname, nick, u.id);
+  const fresh = db.prepare('SELECT * FROM users WHERE id = ?').get(u.id);
+  return ctx.json({ ok: true, user: pubUser(fresh) });
+}
+
+function profileAvatar(ctx) {
+  if (!ctx.user) return ctx.fail('未登录', 401);
+  const { avatar } = ctx.body || {};
+  if (typeof avatar !== 'string' || !/^data:image\/(png|jpe?g|webp|gif);base64,/.test(avatar)) {
+    return ctx.fail('头像格式不支持');
+  }
+  if (avatar.length > 2 * 1024 * 1024) return ctx.fail('头像过大，请重新选择');
+  db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(avatar, ctx.user.id);
+  const fresh = db.prepare('SELECT * FROM users WHERE id = ?').get(ctx.user.id);
+  return ctx.json({ ok: true, user: pubUser(fresh) });
+}
+
+function profileAvatarReset(ctx) {
+  if (!ctx.user) return ctx.fail('未登录', 401);
+  db.prepare('UPDATE users SET avatar = NULL WHERE id = ?').run(ctx.user.id);
+  const fresh = db.prepare('SELECT * FROM users WHERE id = ?').get(ctx.user.id);
+  return ctx.json({ ok: true, user: pubUser(fresh) });
+}
+
+function changePassword(ctx) {
+  if (!ctx.user) return ctx.fail('未登录', 401);
+  const { oldPassword, newPassword } = ctx.body || {};
+  if (!oldPassword || !newPassword) return ctx.fail('请填写原密码与新密码');
+  if (String(newPassword).length < 4) return ctx.fail('新密码至少 4 位');
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(ctx.user.id);
+  if (!auth.verifyPassword(oldPassword, u.password_hash)) return ctx.fail('原密码不正确');
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(auth.hashPassword(newPassword), u.id);
+  db.prepare('DELETE FROM auth_tokens WHERE user_id = ? AND token != ?').run(u.id, ctx.token || '');
+  return ctx.json({ ok: true });
+}
+
+// ---------- 管理员：强制结束他人会话 ----------
 
 function requirePerm(ctx, perm) {
   if (!ctx.user) { ctx.fail('未登录', 401); return false; }
@@ -188,11 +276,24 @@ function requirePerm(ctx, perm) {
   return true;
 }
 
+function adminEndVisit(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.MANAGE_USERS)) return;
+  const { userId } = ctx.body || {};
+  const av = activeVisitOf(Number(userId));
+  if (!av) return ctx.fail('该用户当前不在店内');
+  const settled = billing.settleVisit(av, Date.now(), true);
+  return ctx.json({
+    ok: true,
+    chargedYuan: round2(settled.charged_cents / 100),
+    durationSec: Math.max(0, Math.floor((Date.parse(settled.end_time) - Date.parse(settled.start_time)) / 1000)),
+  });
+}
+
+// ---------- 用户列表（合并：列表 / 增删改 / 余额 / 角色权限 / 重置头像） ----------
+
 function adminUsers(ctx) {
   if (!ctx.user || !auth.isAdmin(ctx.user)) return ctx.fail('无权限', 403);
-  if (!auth.hasPermission(ctx.user, PERMISSIONS.MANAGE_USERS) && !auth.hasPermission(ctx.user, PERMISSIONS.RECHARGE)) {
-    return ctx.fail('无权限查看用户', 403);
-  }
+  if (!auth.hasPermission(ctx.user, PERMISSIONS.MANAGE_USERS)) return ctx.fail('无权限查看用户', 403);
   const rows = db.prepare('SELECT * FROM users ORDER BY id ASC').all();
   const activeIds = new Set(db.prepare("SELECT user_id FROM visits WHERE status = 'ACTIVE'").all().map((r) => r.user_id));
   return ctx.json({
@@ -200,23 +301,123 @@ function adminUsers(ctx) {
   });
 }
 
-function adminRecharge(ctx) {
-  if (!requirePerm(ctx, PERMISSIONS.RECHARGE)) return;
-  const { userId, amountYuan, note } = ctx.body || {};
-  const amount = Number(amountYuan);
-  if (!userId || !Number.isFinite(amount) || amount <= 0) return ctx.fail('请填写有效的充值金额');
-  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(userId));
-  if (!u) return ctx.fail('用户不存在');
-  const cents = Math.round(amount * 100);
-  const newBal = u.balance_cents + cents;
-  db.prepare('UPDATE users SET balance_cents = ? WHERE id = ?').run(newBal, u.id);
+function usersCreate(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.MANAGE_USERS)) return;
+  if (!verifyOpOrFail(ctx)) return;
+  const { username, password, qq, nickname } = ctx.body || {};
+  if (!username || !String(username).trim()) return ctx.fail('请填写用户名');
+  if (!password || String(password).length < 4) return ctx.fail('密码至少 4 位');
+  const uname = String(username).trim();
+  if (db.prepare('SELECT id FROM users WHERE username = ?').get(uname)) return ctx.fail('该用户名已存在');
   db.prepare(
-    "INSERT INTO transactions (user_id, type, amount_cents, operator_id, visit_id, note, created_at) VALUES (?, 'RECHARGE', ?, ?, NULL, ?, ?)"
-  ).run(u.id, cents, ctx.user.id, note ? String(note) : '人工充值', nowIso());
-  return ctx.json({ ok: true, balanceYuan: round2(newBal / 100) });
+    "INSERT INTO users (username, qq, nickname, password_hash, role, permissions, balance_cents, created_at) VALUES (?, ?, ?, ?, 'USER', '[]', 0, ?)"
+  ).run(uname, qq ? String(qq).trim() : '', nickname ? String(nickname).trim() : '', auth.hashPassword(password), nowIso());
+  return ctx.json({ ok: true });
 }
 
-// ---------- 管理员：定价 ----------
+function usersUpdate(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.MANAGE_USERS)) return;
+  if (!verifyOpOrFail(ctx)) return;
+  const { userId, username, qq, nickname, balanceYuan } = ctx.body || {};
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(userId));
+  if (!u) return ctx.fail('用户不存在');
+
+  const uname = username != null ? String(username).trim() : u.username;
+  if (!uname) return ctx.fail('用户名不能为空');
+  if (uname !== u.username && db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(uname, u.id)) {
+    return ctx.fail('该用户名已被占用');
+  }
+  const nqq = qq != null ? String(qq).trim() : (u.qq || '');
+  const nick = nickname != null ? String(nickname).trim() : (u.nickname || '');
+
+  let newBalance = u.balance_cents;
+  if (balanceYuan != null && balanceYuan !== '') {
+    const b = Number(balanceYuan);
+    if (!Number.isFinite(b) || b < 0) return ctx.fail('余额不合法');
+    newBalance = Math.round(b * 100);
+  }
+
+  db.prepare('UPDATE users SET username = ?, qq = ?, nickname = ?, balance_cents = ? WHERE id = ?')
+    .run(uname, nqq, nick, newBalance, u.id);
+
+  // 余额变动记录一笔调整流水（不计入营业额）
+  const delta = newBalance - u.balance_cents;
+  if (delta !== 0) {
+    db.prepare(
+      "INSERT INTO transactions (user_id, type, amount_cents, operator_id, visit_id, note, created_at) VALUES (?, 'ADJUST', ?, ?, NULL, '管理员调整余额', ?)"
+    ).run(u.id, delta, ctx.user.id, nowIso());
+  }
+  return ctx.json({ ok: true });
+}
+
+function usersDelete(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.MANAGE_USERS)) return;
+  if (!verifyOpOrFail(ctx)) return;
+  const { userId } = ctx.body || {};
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(userId));
+  if (!u) return ctx.fail('用户不存在');
+  if (u.role === ROLES.SUPER_ADMIN) return ctx.fail('不能删除超级管理员');
+  if (u.id === ctx.user.id) return ctx.fail('不能删除自己');
+  // 清理关联数据
+  db.prepare('DELETE FROM auth_tokens WHERE user_id = ?').run(u.id);
+  db.prepare('DELETE FROM payment_orders WHERE user_id = ?').run(u.id);
+  db.prepare('DELETE FROM transactions WHERE user_id = ?').run(u.id);
+  db.prepare('DELETE FROM visits WHERE user_id = ?').run(u.id);
+  db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
+  return ctx.json({ ok: true });
+}
+
+function usersResetAvatar(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.MANAGE_USERS)) return;
+  if (!verifyOpOrFail(ctx)) return;
+  const { userId } = ctx.body || {};
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(userId));
+  if (!u) return ctx.fail('用户不存在');
+  db.prepare('UPDATE users SET avatar = NULL WHERE id = ?').run(u.id);
+  return ctx.json({ ok: true });
+}
+
+// 角色与权限（仅超级管理员，且需操作密码）
+function setRole(ctx) {
+  if (!ctx.user || ctx.user.role !== ROLES.SUPER_ADMIN) return ctx.fail('仅超级管理员可操作', 403);
+  if (!verifyOpOrFail(ctx)) return;
+  const { userId, role } = ctx.body || {};
+  if (![ROLES.SUB_ADMIN, ROLES.USER].includes(role)) return ctx.fail('角色不合法');
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(userId));
+  if (!u) return ctx.fail('用户不存在');
+  if (u.role === ROLES.SUPER_ADMIN) return ctx.fail('不能修改超级管理员');
+  const perms = role === ROLES.USER ? '[]' : u.permissions;
+  db.prepare('UPDATE users SET role = ?, permissions = ? WHERE id = ?').run(role, perms, u.id);
+  return ctx.json({ ok: true });
+}
+
+function setPermissions(ctx) {
+  if (!ctx.user || ctx.user.role !== ROLES.SUPER_ADMIN) return ctx.fail('仅超级管理员可操作', 403);
+  if (!verifyOpOrFail(ctx)) return;
+  const { userId, permissions } = ctx.body || {};
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(userId));
+  if (!u) return ctx.fail('用户不存在');
+  if (u.role !== ROLES.SUB_ADMIN) return ctx.fail('只能给管理员分配权限');
+  if (!Array.isArray(permissions)) return ctx.fail('权限格式错误');
+  const valid = Object.values(PERMISSIONS);
+  const clean = permissions.filter((p) => valid.includes(p));
+  db.prepare('UPDATE users SET permissions = ? WHERE id = ?').run(JSON.stringify(clean), u.id);
+  return ctx.json({ ok: true });
+}
+
+// 修改操作密码（仅超级管理员）
+function opPasswordSet(ctx) {
+  if (!ctx.user || ctx.user.role !== ROLES.SUPER_ADMIN) return ctx.fail('仅超级管理员可操作', 403);
+  const { oldPassword, newPassword } = ctx.body || {};
+  const hash = getOpHash();
+  if (hash && !auth.verifyPassword(oldPassword || '', hash)) return ctx.fail('原操作密码不正确');
+  if (!newPassword || String(newPassword).length < 4) return ctx.fail('新操作密码至少 4 位');
+  db.prepare("INSERT INTO settings (key, value) VALUES ('op_password', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .run(auth.hashPassword(String(newPassword)));
+  return ctx.json({ ok: true });
+}
+
+// ---------- 定价 ----------
 
 function adminGetPricing(ctx) {
   if (!requirePerm(ctx, PERMISSIONS.MANAGE_PRICING)) return;
@@ -249,22 +450,21 @@ function adminSetPricing(ctx) {
   return ctx.json({ ok: true });
 }
 
-// ---------- 管理员：报表 ----------
+// ---------- 报表 ----------
 
 function adminReports(ctx) {
   if (!requirePerm(ctx, PERMISSIONS.VIEW_REPORTS)) return;
   const dateStr = (ctx.query.date && /^\d{4}-\d{2}-\d{2}$/.test(ctx.query.date)) ? ctx.query.date : localDate(new Date());
 
-  // 当日访问记录（按 start_time 的本地日期）
   const allVisits = db.prepare(`
-    SELECT v.*, u.username FROM visits v JOIN users u ON u.id = v.user_id
+    SELECT v.*, u.username, u.nickname FROM visits v JOIN users u ON u.id = v.user_id
     ORDER BY v.start_time DESC
   `).all();
   const dayVisits = allVisits.filter((v) => localDate(new Date(Date.parse(v.start_time))) === dateStr);
   const records = dayVisits.map((v) => {
     const endMs = v.end_time ? Date.parse(v.end_time) : Date.now();
     return {
-      username: v.username,
+      username: displayName(v),
       billable: !!v.billable,
       startTime: v.start_time,
       endTime: v.end_time,
@@ -275,13 +475,11 @@ function adminReports(ctx) {
     };
   });
 
-  // 营收（按 CHARGE 流水的本地日期）
   const charges = db.prepare("SELECT amount_cents, created_at FROM transactions WHERE type = 'CHARGE'").all();
   const dayRevenueCents = charges
     .filter((c) => localDate(new Date(Date.parse(c.created_at))) === dateStr)
     .reduce((s, c) => s + c.amount_cents, 0);
 
-  // 近 7 天营收曲线（以 dateStr 为最后一天往前 7 天）
   const buckets = {};
   const labels = [];
   const base = new Date(dateStr + 'T00:00:00');
@@ -307,64 +505,7 @@ function adminReports(ctx) {
   });
 }
 
-// ---------- 总管理员：角色与权限 ----------
-
-function setRole(ctx) {
-  if (!ctx.user || ctx.user.role !== ROLES.SUPER_ADMIN) return ctx.fail('仅总管理员可操作', 403);
-  const { userId, role } = ctx.body || {};
-  if (![ROLES.SUB_ADMIN, ROLES.USER].includes(role)) return ctx.fail('角色不合法');
-  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(userId));
-  if (!u) return ctx.fail('用户不存在');
-  if (u.role === ROLES.SUPER_ADMIN) return ctx.fail('不能修改总管理员');
-  const perms = role === ROLES.USER ? '[]' : u.permissions;
-  db.prepare('UPDATE users SET role = ?, permissions = ? WHERE id = ?').run(role, perms, u.id);
-  return ctx.json({ ok: true });
-}
-
-function setPermissions(ctx) {
-  if (!ctx.user || ctx.user.role !== ROLES.SUPER_ADMIN) return ctx.fail('仅总管理员可操作', 403);
-  const { userId, permissions } = ctx.body || {};
-  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(userId));
-  if (!u) return ctx.fail('用户不存在');
-  if (u.role !== ROLES.SUB_ADMIN) return ctx.fail('只能给分管理员分配权限');
-  if (!Array.isArray(permissions)) return ctx.fail('权限格式错误');
-  const valid = Object.values(PERMISSIONS);
-  const clean = permissions.filter((p) => valid.includes(p));
-  db.prepare('UPDATE users SET permissions = ? WHERE id = ?').run(JSON.stringify(clean), u.id);
-  return ctx.json({ ok: true });
-}
-
-// ---------- 修改密码（全角色） ----------
-
-function changePassword(ctx) {
-  if (!ctx.user) return ctx.fail('未登录', 401);
-  const { oldPassword, newPassword } = ctx.body || {};
-  if (!oldPassword || !newPassword) return ctx.fail('请填写原密码与新密码');
-  if (String(newPassword).length < 4) return ctx.fail('新密码至少 4 位');
-  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(ctx.user.id);
-  if (!auth.verifyPassword(oldPassword, u.password_hash)) return ctx.fail('原密码不正确');
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(auth.hashPassword(newPassword), u.id);
-  // 安全起见：踢掉除当前会话外的其它登录
-  db.prepare('DELETE FROM auth_tokens WHERE user_id = ? AND token != ?').run(u.id, ctx.token || '');
-  return ctx.json({ ok: true });
-}
-
-// ---------- 管理员：强制结束他人会话 ----------
-
-function adminEndVisit(ctx) {
-  if (!requirePerm(ctx, PERMISSIONS.MANAGE_USERS)) return;
-  const { userId } = ctx.body || {};
-  const av = activeVisitOf(Number(userId));
-  if (!av) return ctx.fail('该用户当前不在店内');
-  const settled = billing.settleVisit(av, Date.now(), true);
-  return ctx.json({
-    ok: true,
-    chargedYuan: round2(settled.charged_cents / 100),
-    durationSec: Math.max(0, Math.floor((Date.parse(settled.end_time) - Date.parse(settled.start_time)) / 1000)),
-  });
-}
-
-// ---------- 在线充值（可插拔支付） ----------
+// ---------- 在线充值（框架保留；mock 默认关闭） ----------
 
 function rechargeMethods(ctx) {
   if (!ctx.user) return ctx.fail('未登录', 401);
@@ -388,7 +529,6 @@ function rechargeConfirm(ctx) {
   const { orderNo } = ctx.body || {};
   const order = payment.getOrder(String(orderNo || ''));
   if (!order || order.user_id !== ctx.user.id) return ctx.fail('订单不存在');
-  // 仅模拟网关允许前端直接确认；真实渠道由网关异步回调入账。
   if (order.method !== 'mock') return ctx.fail('该支付方式请通过扫码完成，到账以支付平台回调为准');
   try {
     payment.markPaid(orderNo);
@@ -407,7 +547,7 @@ function rechargeStatus(ctx) {
 
 // ---------- 流水明细 ----------
 
-// 将原始流水整理为友好列表：RECHARGE 逐条；CHARGE 按访问(visit)聚合为一条。
+// RECHARGE / ADJUST 逐条；CHARGE 按访问(visit)聚合为一条。
 function buildTxList(rows) {
   const items = [];
   const chargeByVisit = new Map();
@@ -440,24 +580,24 @@ function myTransactions(ctx) {
 function adminTransactions(ctx) {
   if (!requirePerm(ctx, PERMISSIONS.VIEW_REPORTS)) return;
   const userId = ctx.query.userId ? Number(ctx.query.userId) : null;
-  const type = ctx.query.type && ['RECHARGE', 'CHARGE'].includes(ctx.query.type) ? ctx.query.type : null;
-  let sql = 'SELECT t.*, u.username FROM transactions t JOIN users u ON u.id = t.user_id WHERE 1=1';
+  const type = ctx.query.type && ['RECHARGE', 'CHARGE', 'ADJUST'].includes(ctx.query.type) ? ctx.query.type : null;
+  let sql = 'SELECT t.*, u.username, u.nickname FROM transactions t JOIN users u ON u.id = t.user_id WHERE 1=1';
   const args = [];
   if (userId) { sql += ' AND t.user_id = ?'; args.push(userId); }
   if (type) { sql += ' AND t.type = ?'; args.push(type); }
   sql += ' ORDER BY t.created_at DESC LIMIT 1000';
-  const rows = db.prepare(sql).all(...args);
+  const rows = db.prepare(sql).all(...args).map((r) => ({ ...r, username: (r.nickname && r.nickname.trim()) ? r.nickname.trim() : r.username }));
   return ctx.json({ items: buildTxList(rows).slice(0, 300) });
 }
 
 module.exports = {
   register, login, logout, status,
   visitStart, visitEnd,
-  adminUsers, adminRecharge,
-  adminGetPricing, adminSetPricing,
-  adminReports,
-  setRole, setPermissions,
-  changePassword, adminEndVisit,
+  profileUpdate, profileAvatar, profileAvatarReset, changePassword,
+  adminEndVisit,
+  adminUsers, usersCreate, usersUpdate, usersDelete, usersResetAvatar,
+  setRole, setPermissions, opPasswordSet,
+  adminGetPricing, adminSetPricing, adminReports,
   rechargeMethods, rechargeCreate, rechargeConfirm, rechargeStatus,
   myTransactions, adminTransactions,
 };

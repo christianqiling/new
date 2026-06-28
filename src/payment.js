@@ -7,7 +7,8 @@ const crypto = require('node:crypto');
 const { db } = require('./db');
 
 const METHODS = {
-  mock: { id: 'mock', label: '模拟支付（演示）', enabled: true },
+  // 模拟支付默认关闭（普通用户不可自助充值）；如需演示可设 ENABLE_MOCK_PAY=1
+  mock: { id: 'mock', label: '模拟支付（演示）', enabled: process.env.ENABLE_MOCK_PAY === '1' },
   wechat: { id: 'wechat', label: '微信支付', enabled: !!process.env.WECHAT_MCH_ID },
   alipay: { id: 'alipay', label: '支付宝', enabled: !!process.env.ALIPAY_APP_ID },
 };
