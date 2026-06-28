@@ -2,19 +2,23 @@
 // 纯加密/权限工具，不依赖数据库，避免循环引用
 const crypto = require('node:crypto');
 
-// 可分配给分管理员的权限
+// 可分配给管理员的权限
 const PERMISSIONS = {
   RECHARGE: 'RECHARGE', // 给用户充值
   MANAGE_PRICING: 'MANAGE_PRICING', // 调整营业价格
   VIEW_REPORTS: 'VIEW_REPORTS', // 查看营业报表
   MANAGE_USERS: 'MANAGE_USERS', // 查看/管理用户
+  MANAGE_CARDS: 'MANAGE_CARDS', // 增删用户卡片
+  GRANT_FREE: 'GRANT_FREE', // 发放/调整免费额度
 };
 
 const PERMISSION_LABELS = {
   RECHARGE: '为用户充值',
   MANAGE_PRICING: '调整营业价格',
   VIEW_REPORTS: '查看营业报表',
-  MANAGE_USERS: '查看用户列表',
+  MANAGE_USERS: '管理用户',
+  MANAGE_CARDS: '增删用户卡片',
+  GRANT_FREE: '发放/调整免费额度',
 };
 
 const ROLES = {

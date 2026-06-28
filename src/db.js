@@ -112,6 +112,7 @@ function migrate() {
   if (!cols.includes('nickname')) db.exec("ALTER TABLE users ADD COLUMN nickname TEXT");
   if (!cols.includes('avatar')) db.exec("ALTER TABLE users ADD COLUMN avatar TEXT");
   if (!cols.includes('free_cents')) db.exec("ALTER TABLE users ADD COLUMN free_cents REAL NOT NULL DEFAULT 0");
+  if (!cols.includes('admin_password_hash')) db.exec("ALTER TABLE users ADD COLUMN admin_password_hash TEXT");
 }
 
 function seed() {
@@ -145,6 +146,28 @@ function seed() {
     db.prepare("INSERT INTO settings (key, value) VALUES ('op_password', ?)").run(hashPassword(opPass));
     console.log(`[seed] 首次初始化：已创建管理操作密码 ${opPass} (用于修改/删除用户，请尽快修改)`);
     seeded = true;
+  }
+
+  // 二级统一密码（重要操作：修改管理员/超管信息、角色权限等）
+  const lv2 = db.prepare("SELECT value FROM settings WHERE key = 'level2_password'").get();
+  if (!lv2) {
+    const old = db.prepare("SELECT value FROM settings WHERE key = 'op_password'").get();
+    const val = old ? old.value : hashPassword(process.env.LEVEL2_PASSWORD || '123456');
+    db.prepare("INSERT INTO settings (key, value) VALUES ('level2_password', ?)").run(val);
+    console.log('[seed] 首次初始化：已设置二级统一密码（默认 123456，请尽快修改）');
+    seeded = true;
+  }
+
+  // 起步费（分），默认 0
+  const bf = db.prepare("SELECT value FROM settings WHERE key = 'base_fee_cents'").get();
+  if (!bf) db.prepare("INSERT INTO settings (key, value) VALUES ('base_fee_cents', '0')").run();
+
+  // 为所有管理员设置默认"管理员密码"(123456)（若未设置）
+  const adminsNoPw = db.prepare("SELECT id FROM users WHERE role IN ('SUPER_ADMIN','SUB_ADMIN') AND (admin_password_hash IS NULL OR admin_password_hash = '')").all();
+  if (adminsNoPw.length) {
+    const def = hashPassword('123456');
+    const upd = db.prepare('UPDATE users SET admin_password_hash = ? WHERE id = ?');
+    for (const a of adminsNoPw) upd.run(def, a.id);
   }
 
   if (!seeded) {

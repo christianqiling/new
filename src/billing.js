@@ -171,6 +171,20 @@ function projectVisit(visit, nowMs = Date.now()) {
   return { elapsedSec, currentCost, projectedFree, projectedBalance, rateNow };
 }
 
+// 一次性扣费（如起步费）：先扣免费额度再扣余额，记录流水。
+function chargeOnce(userId, visitId, amountCents, note) {
+  if (!(amountCents > 0)) return 0;
+  const user = getUserStmt.get(userId);
+  const free = user.free_cents || 0;
+  const fromFree = Math.min(free, amountCents);
+  const fromBal = amountCents - fromFree;
+  updateFreeBalStmt.run(free - fromFree, user.balance_cents - fromBal, userId);
+  const iso = new Date().toISOString();
+  if (fromBal > 1e-9) insertTxStmt.run(userId, 'CHARGE', fromBal, null, visitId, note, iso);
+  if (fromFree > 1e-9) insertTxStmt.run(userId, 'FREE_USE', fromFree, null, visitId, note + '(免费抵扣)', iso);
+  return amountCents;
+}
+
 module.exports = {
   getPricingRules,
   rateForHour,
@@ -178,4 +192,5 @@ module.exports = {
   settleVisit,
   tickAll,
   projectVisit,
+  chargeOnce,
 };

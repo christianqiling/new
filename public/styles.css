@@ -316,3 +316,31 @@ tbody tr:hover { background: var(--panel-2); }
 @media (max-width: 380px) {
   .metrics { grid-template-columns: 1fr; }
 }
+
+
+/* 主题色按深度区分：余额(深) / 免费额度(中) / 进店按钮 */
+.bignum.bal-deep { color: #14507e; }
+.bignum.free-mid { color: #4f93d6; }
+.btn-enter { background: var(--theme-deep); color: var(--primary-text); border: 1px solid #79b4e3; }
+.btn-enter:hover { background: #79b4e3; }
+.bignum.neg { color: var(--red) !important; }
+
+/* 头像下拉菜单 */
+.topbar-right { position: relative; }
+.avatar-trigger { background: none; border: none; cursor: pointer; padding: 4px 6px; border-radius: 10px; }
+.avatar-trigger:hover { background: rgba(255,255,255,.5); }
+.menu { position: absolute; right: 0; top: calc(100% + 8px); background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(20,60,110,.18); overflow: hidden; z-index: 30; min-width: 160px; }
+.menu .who { padding: 11px 16px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.menu button { display: block; width: 100%; text-align: left; padding: 11px 16px; background: #fff; border: none; cursor: pointer; font-size: 14px; color: var(--text); }
+.menu button:hover { background: var(--panel-2); }
+
+/* 价格时段列表 */
+.slot-list { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 4px; }
+.slot-row { display: flex; justify-content: space-between; padding: 7px 11px; border: 1px solid var(--line); border-radius: 9px; font-size: 14px; }
+.slot-row.now { border-color: var(--theme-deep); background: rgba(143,196,238,.16); font-weight: 600; }
+.slot-row .sp { color: var(--primary-text); }
+
+/* 批量选择用户 */
+.user-pick { max-height: 240px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; margin: 6px 0; }
+.user-pick label { display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 0; color: var(--text); cursor: pointer; }
+.user-pick input { width: auto; }
