@@ -20,14 +20,23 @@ function localDate(d) {
 }
 function displayName(u) { const n = (u.nickname || '').trim(); return n || u.username; }
 function getSetting(key) { const r = db.prepare('SELECT value FROM settings WHERE key = ?').get(key); return r ? r.value : null; }
+function banState(u) {
+  if (!u || !u.ban_until) return { banned: false };
+  if (u.ban_until === 'PERMANENT') return { banned: true, permanent: true, until: null };
+  const t = Date.parse(u.ban_until);
+  if (Number.isFinite(t) && Date.now() < t) return { banned: true, permanent: false, until: u.ban_until };
+  return { banned: false };
+}
 
 function pubUser(u) {
+  const bs = banState(u);
   return {
     id: u.id, username: u.username, qq: u.qq || '', nickname: u.nickname || '',
     displayName: displayName(u), avatar: u.avatar || null, role: u.role,
     permissions: safeParse(u.permissions),
     balanceCents: u.balance_cents, balanceYuan: round2(u.balance_cents / 100),
     freeCents: u.free_cents || 0, freeYuan: round2((u.free_cents || 0) / 100),
+    banned: bs.banned, banPermanent: !!bs.permanent, banUntil: bs.until || null,
   };
 }
 function capsFor(u) {
@@ -39,6 +48,7 @@ function capsFor(u) {
     MANAGE_USERS: auth.hasPermission(u, PERMISSIONS.MANAGE_USERS),
     MANAGE_CARDS: auth.hasPermission(u, PERMISSIONS.MANAGE_CARDS),
     GRANT_FREE: auth.hasPermission(u, PERMISSIONS.GRANT_FREE),
+    BAN_USERS: auth.hasPermission(u, PERMISSIONS.BAN_USERS),
   };
 }
 function activeVisitOf(userId) {
@@ -196,6 +206,8 @@ function visitStart(ctx) {
   if (!ctx.user) return ctx.fail('未登录', 401);
   const me = db.prepare('SELECT * FROM users WHERE id = ?').get(ctx.user.id);
   if (activeVisitOf(me.id)) return ctx.fail('你已在店内，无需重复进店');
+  const bs = banState(me);
+  if (bs.banned) return ctx.fail(bs.permanent ? '你已被永久封禁，无法进店' : `你已被封禁至 ${new Date(bs.until).toLocaleString('zh-CN')}，无法进店`);
   const billable = me.role === ROLES.USER ? 1 : 0; // 管理员不计费（仅记录在店时长）
   if (billable) {
     const available = (me.free_cents || 0) + me.balance_cents;
@@ -389,6 +401,34 @@ function usersResetAvatar(ctx) {
   if (!verifyForTarget(ctx, u.role)) return;
   db.prepare('UPDATE users SET avatar = NULL WHERE id = ?').run(u.id);
   logAction(ctx, '重置头像', displayName(u));
+  return ctx.json({ ok: true });
+}
+// 封禁 / 解封
+function userBan(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.BAN_USERS)) return;
+  const { userId, permanent, minutes } = ctx.body || {};
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(userId));
+  if (!u) return ctx.fail('用户不存在');
+  if (u.role === ROLES.SUPER_ADMIN) return ctx.fail('不能封禁超级管理员');
+  if (u.id === ctx.user.id) return ctx.fail('不能封禁自己');
+  if (!verifyForTarget(ctx, u.role)) return;
+  let until, label;
+  if (permanent) { until = 'PERMANENT'; label = '永久'; }
+  else { const m = Number(minutes); if (!Number.isFinite(m) || m <= 0) return ctx.fail('请填写有效的封禁时长（分钟）'); until = new Date(Date.now() + m * 60000).toISOString(); label = `${m} 分钟`; }
+  db.prepare('UPDATE users SET ban_until = ? WHERE id = ?').run(until, u.id);
+  // 封禁时如在店则强制结束
+  const av = activeVisitOf(u.id);
+  if (av) billing.settleVisit(av, Date.now(), true);
+  logAction(ctx, '封禁用户', `${displayName(u)}（${label}）`);
+  return ctx.json({ ok: true });
+}
+function userUnban(ctx) {
+  if (!requirePerm(ctx, PERMISSIONS.BAN_USERS)) return;
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(Number((ctx.body || {}).userId));
+  if (!u) return ctx.fail('用户不存在');
+  if (!verifyForTarget(ctx, u.role)) return;
+  db.prepare('UPDATE users SET ban_until = NULL WHERE id = ?').run(u.id);
+  logAction(ctx, '解除封禁', displayName(u));
   return ctx.json({ ok: true });
 }
 // 角色与权限（超级管理员 + 二级统一密码）
@@ -656,6 +696,7 @@ module.exports = {
   myCards, cardDeleteSelf, cardAddSelf,
   adminEndVisit,
   adminUsers, usersCreate, usersUpdate, usersDelete, usersResetAvatar,
+  userBan, userUnban,
   grantFree,
   adminUserCards, adminCardAdd, adminCardDelete,
   myCode, adminRechargeByInput,

@@ -122,6 +122,7 @@ function migrate() {
   if (!cols.includes('avatar')) db.exec("ALTER TABLE users ADD COLUMN avatar TEXT");
   if (!cols.includes('free_cents')) db.exec("ALTER TABLE users ADD COLUMN free_cents REAL NOT NULL DEFAULT 0");
   if (!cols.includes('admin_password_hash')) db.exec("ALTER TABLE users ADD COLUMN admin_password_hash TEXT");
+  if (!cols.includes('ban_until')) db.exec("ALTER TABLE users ADD COLUMN ban_until TEXT");
 }
 
 function seed() {

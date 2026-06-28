@@ -11,6 +11,8 @@
   --primary: #D7EEFF;
   --primary-text: #14507e;
   --primary-dark: #b9e0fb;
+  --blue-deep: #14507e;
+  --blue-mid: #4f93d6;
   --green: #19a974;
   --red: #e5484d;
   --amber: #e8920c;
@@ -39,9 +41,9 @@ body {
 .topbar-right { display: flex; align-items: center; gap: 12px; }
 .whoami { color: var(--text); font-size: 14px; display:flex; align-items:center; gap:8px; }
 .badge { display:inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-.badge.super { background: rgba(229,72,77,.12); color: var(--red); }
-.badge.sub { background: rgba(232,146,12,.16); color: var(--amber); }
-.badge.user { background: rgba(20,80,126,.12); color: var(--primary-text); }
+.badge.super { background: rgba(20,80,126,.16); color: #0f3a5c; }
+.badge.sub { background: rgba(79,147,214,.18); color: #2f6f9e; }
+.badge.user { background: rgba(143,196,238,.28); color: var(--primary-text); }
 
 #content { max-width: 1080px; margin: 0 auto; padding: 26px 18px 60px; width: 100%; }
 
@@ -93,8 +95,8 @@ input:focus, select:focus { outline: none; border-color: var(--primary); box-sha
 
 /* 大数字 */
 .bignum { font-size: 44px; font-weight: 800; letter-spacing: .5px; }
-.bignum.green { color: var(--green); }
-.bignum.amber { color: var(--amber); }
+.bignum.green { color: var(--primary-text); }
+.bignum.amber { color: var(--primary-text); }
 .metric { display:flex; flex-direction: column; gap: 4px; }
 .metric .label { color: var(--muted); font-size: 13px; }
 .metric .val { font-size: 28px; font-weight: 700; }
@@ -206,10 +208,10 @@ small.hint { color: var(--muted); font-size: 12px; }
 /* 公告板块 */
 .ann-list { display: flex; flex-direction: column; gap: 10px; }
 .ann-item { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--panel-2); }
-.ann-item.pinned { border-color: rgba(232,146,12,.5); background: rgba(232,146,12,.06); }
+.ann-item.pinned { border-color: rgba(79,147,214,.5); background: rgba(143,196,238,.12); }
 .ann-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
 .ann-title { font-weight: 700; }
-.ann-tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: rgba(232,146,12,.16); color: var(--amber); font-weight: 600; }
+.ann-tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: rgba(79,147,214,.18); color: var(--primary-text); font-weight: 600; }
 .ann-content { color: var(--text); white-space: pre-wrap; word-break: break-word; font-size: 14px; }
 .ann-meta { color: var(--muted); font-size: 12px; margin-top: 6px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .ann-acts { display: flex; gap: 6px; }
@@ -273,8 +275,12 @@ tbody tr:hover { background: var(--panel-2); }
 .acct-head h2 { margin: 0; }
 .qr-btn { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 2px 9px; cursor: pointer; font-size: 17px; line-height: 1.4; }
 .qr-btn:hover { background: var(--panel-2); }
-.free-amt { color: var(--amber); }
+.free-amt { color: var(--blue-mid, #4f93d6); }
 .acct-metrics { display: flex; gap: 28px; flex-wrap: wrap; }
+
+/* 封禁状态 */
+.pill.ban { background: rgba(229,72,77,.14); color: var(--red); }
+.banner-warn { background: rgba(229,72,77,.1); border: 1px solid rgba(229,72,77,.3); color: var(--red); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-top: 8px; }
 
 /* 二维码弹窗 */
 .qr-wrap { text-align: center; }
@@ -344,3 +350,9 @@ tbody tr:hover { background: var(--panel-2); }
 .user-pick { max-height: 240px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; margin: 6px 0; }
 .user-pick label { display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 0; color: var(--text); cursor: pointer; }
 .user-pick input { width: auto; }
+
+
+/* 权限列表（可折叠） */
+.perm-list label { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-bottom: 1px solid var(--line); margin: 0; color: var(--text); cursor: pointer; }
+.perm-list label:last-child { border-bottom: none; }
+.perm-list input { width: auto; }

@@ -10,6 +10,7 @@ const PERMISSIONS = {
   MANAGE_USERS: 'MANAGE_USERS', // 查看/管理用户
   MANAGE_CARDS: 'MANAGE_CARDS', // 增删用户卡片
   GRANT_FREE: 'GRANT_FREE', // 发放/调整免费额度
+  BAN_USERS: 'BAN_USERS', // 封禁用户
 };
 
 const PERMISSION_LABELS = {
@@ -19,6 +20,7 @@ const PERMISSION_LABELS = {
   MANAGE_USERS: '管理用户',
   MANAGE_CARDS: '增删用户卡片',
   GRANT_FREE: '发放/调整免费额度',
+  BAN_USERS: '封禁用户',
 };
 
 const ROLES = {

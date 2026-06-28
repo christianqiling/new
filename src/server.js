@@ -112,6 +112,8 @@ const routes = {
   'POST /api/admin/users/update': api.usersUpdate,
   'POST /api/admin/users/delete': api.usersDelete,
   'POST /api/admin/users/reset-avatar': api.usersResetAvatar,
+  'POST /api/admin/users/ban': api.userBan,
+  'POST /api/admin/users/unban': api.userUnban,
   'POST /api/admin/grant-free': api.grantFree,
   'POST /api/admin/recharge-by-input': api.adminRechargeByInput,
   'GET /api/admin/user-cards': api.adminUserCards,

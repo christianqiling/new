@@ -22,7 +22,7 @@ async function api(path, opts = {}) {
   return data;
 }
 
-const PERM_LABELS = { RECHARGE: '为用户充值', MANAGE_PRICING: '调整营业价格', VIEW_REPORTS: '查看营业报表', MANAGE_USERS: '管理用户', MANAGE_CARDS: '增删用户卡片', GRANT_FREE: '发放/调整免费额度' };
+const PERM_LABELS = { RECHARGE: '为用户充值', MANAGE_PRICING: '调整营业价格', VIEW_REPORTS: '查看营业报表', MANAGE_USERS: '管理用户', MANAGE_CARDS: '增删用户卡片', GRANT_FREE: '发放/调整免费额度', BAN_USERS: '封禁用户' };
 
 const state = {
   status: null, statusAt: 0, view: 'auth', adminTab: 'overview', bizTab: 'reports', authTab: 'login',
@@ -275,10 +275,13 @@ function playCardHtml(st) {
       <div class="metric"><span class="label">当前时价</span><span class="val mono">${money(av.rateNowYuan)}/时</span></div>
     </div><button id="endBtn" class="btn btn-red btn-block">离店</button></div>`;
   }
-  const disabled = !isAdmin && availableYuan(st) <= 0;
+  const banned = st.user.banned;
+  const lowBal = !isAdmin && availableYuan(st) <= 0;
+  const disabled = banned || lowBal;
   return `<div class="card"><h2>进店</h2>
     <button id="startBtn" class="btn btn-enter btn-block" ${disabled ? 'disabled' : ''}>进店</button>
-    ${disabled ? '<small class="hint" style="color:var(--red)">可用额度不足（余额+免费额度），请先充值。</small>' : ''}
+    ${banned ? `<div class="banner-warn">你已被${st.user.banPermanent ? '永久' : ''}封禁${st.user.banUntil ? '，至 ' + new Date(st.user.banUntil).toLocaleString('zh-CN') : ''}，暂时无法进店。</div>`
+      : (lowBal ? '<small class="hint" style="color:var(--red)">可用额度不足（余额+免费额度），请先充值。</small>' : '')}
     <h3 style="margin:16px 0 6px">价格（当前及后续时段）</h3>${priceSlotsHtml(st)}</div>`;
 }
 function wirePlayAccount() {
@@ -399,7 +402,7 @@ async function renderAdminUserList(body) {
   body.innerHTML = '<div class="card"><p class="muted">加载中…</p></div>';
   let data; try { data = await api('/api/admin/users'); } catch (e) { body.innerHTML = `<div class="card"><p class="empty">${esc(e.message)}</p></div>`; return; }
   const caps = state.status.caps;
-  const rowHtml = (u) => `<tr><td><div style="display:flex;align-items:center;gap:10px">${avatarHtml(u.avatar, u.displayName, 'sz-32')}<span><b>${esc(u.displayName)}</b>${u.nickname ? `<br><small class="muted">@${esc(u.username)}</small>` : ''}</span></div></td><td class="muted">${esc(u.qq)}</td><td>${roleBadge(u.role)}</td><td class="right mono">${money(u.balanceYuan)}</td><td class="right mono free-mid">${money(u.freeYuan)}</td><td>${u.inStore ? '<span class="pill in">在店</span>' : '<span class="pill out">离店</span>'}</td><td class="right"><button class="btn btn-sm editUserBtn" data-id="${u.id}">管理</button></td></tr>`;
+  const rowHtml = (u) => `<tr><td><div style="display:flex;align-items:center;gap:10px">${avatarHtml(u.avatar, u.displayName, 'sz-32')}<span><b>${esc(u.displayName)}</b>${u.nickname ? `<br><small class="muted">@${esc(u.username)}</small>` : ''}</span></div></td><td class="muted">${esc(u.qq)}</td><td>${roleBadge(u.role)}</td><td class="right mono">${money(u.balanceYuan)}</td><td class="right mono free-mid">${money(u.freeYuan)}</td><td>${u.banned ? '<span class="pill ban">封禁</span> ' : ''}${u.inStore ? '<span class="pill in">在店</span>' : '<span class="pill out">离店</span>'}</td><td class="right"><button class="btn btn-sm editUserBtn" data-id="${u.id}">管理</button></td></tr>`;
   body.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px"><h2 style="margin:0">用户列表</h2><div style="display:flex;gap:8px;flex-wrap:wrap">
       ${caps.GRANT_FREE ? '<button id="grantFreeBtn" class="btn btn-ghost btn-sm">发放免费额度</button>' : ''}
       ${caps.MANAGE_USERS ? '<button id="exportBtn" class="btn btn-ghost btn-sm">⬇ 导出Excel</button><button id="addUserBtn" class="btn btn-sm">+ 新增用户</button>' : ''}</div></div>
@@ -451,7 +454,14 @@ function openUserEditModal(u, done) {
     <label>用户名</label><input id="euU" value="${esc(u.username)}" /><label>昵称</label><input id="euN" value="${esc(u.nickname)}" /><label>QQ 号</label><input id="euQ" value="${esc(u.qq)}" />
     <div class="row"><div><label>余额（元）</label><input id="euB" type="number" step="0.01" value="${u.balanceYuan}" /></div><div><label>免费额度（元）</label><input id="euF" type="number" min="0" step="0.01" value="${u.freeYuan}" /></div></div>
     ${isSuper && u.role !== 'SUPER_ADMIN' ? `<label>身份</label><select id="euRole"><option value="USER" ${u.role === 'USER' ? 'selected' : ''}>用户</option><option value="SUB_ADMIN" ${u.role === 'SUB_ADMIN' ? 'selected' : ''}>管理员</option></select>
-      <div id="euPermWrap" style="${u.role === 'SUB_ADMIN' ? '' : 'display:none'}"><label style="display:flex;justify-content:space-between;align-items:center">权限<button id="euPermAll" class="btn btn-ghost btn-sm" type="button">全选/全不选</button></label><div class="perm-grid">${allPerms.map((p) => `<label><input type="checkbox" class="euPerm" value="${p}" ${u.permissions.includes(p) ? 'checked' : ''}>${PERM_LABELS[p]}</label>`).join('')}</div></div>` : ''}
+      <div id="euPermWrap" style="${u.role === 'SUB_ADMIN' ? '' : 'display:none'}">
+        <div class="collapse" id="permCollapse"><div class="collapse-head"><span>权限设置</span><span class="chev">▶</span></div>
+          <div class="collapse-body"><div style="display:flex;justify-content:flex-end;margin-bottom:6px"><button id="euPermAll" class="btn btn-ghost btn-sm" type="button">全选 / 全不选</button></div>
+            <div class="perm-list">${allPerms.map((p) => `<label><input type="checkbox" class="euPerm" value="${p}" ${u.permissions.includes(p) ? 'checked' : ''}>${PERM_LABELS[p]}</label>`).join('')}</div></div></div>
+      </div>` : ''}
+    ${caps.BAN_USERS && u.role !== 'SUPER_ADMIN' && u.id !== state.status.user.id ? `<hr class="section-divider" /><h3>封禁</h3>
+      <div class="muted" style="margin-bottom:8px">${u.banned ? (u.banPermanent ? '当前：永久封禁' : '当前：封禁至 ' + new Date(u.banUntil).toLocaleString('zh-CN')) : '当前：正常'}</div>
+      ${u.banned ? '<button id="unbanBtn" class="btn btn-ghost btn-sm">解除封禁</button>' : '<div class="row"><div><label>封禁时长</label><select id="banDur"><option value="60">1 小时</option><option value="1440">1 天</option><option value="10080">7 天</option><option value="permanent">永久</option></select></div><div style="flex:none;align-self:flex-end"><button id="banBtn" class="btn btn-red">封禁</button></div></div>'}` : ''}
     ${caps.MANAGE_CARDS ? `<hr class="section-divider" /><h3>卡片（最多 3 张）</h3><div id="euCards"><p class="muted">加载中…</p></div><div class="row" style="margin-top:6px"><div><input id="euCardNo" placeholder="刷卡或输入卡号" /></div><div style="flex:none;align-self:flex-end"><button id="euCardAdd" class="btn btn-sm">添加卡片</button></div></div>` : ''}
     ${isSuper && targetAdmin ? '<hr class="section-divider" /><button id="euResetPw" class="btn btn-ghost btn-sm">重置其管理员密码</button>' : ''}
     <hr class="section-divider" />
@@ -484,6 +494,9 @@ function openUserEditModal(u, done) {
       if (important) promptLevel2(run); else promptAdminPw(run);
     });
     const del = $('#euDel'); if (del) del.addEventListener('click', () => { if (!confirm(`确定删除用户「${u.displayName}」？不可恢复。`)) return; authForTarget(u.role, async (a, c) => { await api('/api/admin/users/delete', { method: 'POST', body: JSON.stringify({ userId: u.id, ...a }) }); toast('用户已删除', 'ok'); c(); close(); done(); }); });
+    const pc = document.getElementById('permCollapse'); if (pc) pc.querySelector('.collapse-head').addEventListener('click', () => pc.classList.toggle('open'));
+    const banBtn = $('#banBtn'); if (banBtn) banBtn.addEventListener('click', () => { const v = $('#banDur').value; const payload = v === 'permanent' ? { userId: u.id, permanent: true } : { userId: u.id, minutes: Number(v) }; authForTarget(u.role, async (a, c) => { await api('/api/admin/users/ban', { method: 'POST', body: JSON.stringify({ ...payload, ...a }) }); toast('已封禁', 'ok'); c(); close(); done(); }); });
+    const unbanBtn = $('#unbanBtn'); if (unbanBtn) unbanBtn.addEventListener('click', () => { authForTarget(u.role, async (a, c) => { await api('/api/admin/users/unban', { method: 'POST', body: JSON.stringify({ userId: u.id, ...a }) }); toast('已解除封禁', 'ok'); c(); close(); done(); }); });
   });
 }
 
@@ -522,7 +535,7 @@ function weeklyChart(weekly) {
   const max = Math.max(1, ...weekly.map((d) => d.revenueYuan)), niceMax = Math.ceil(max / 5) * 5 || 5;
   const n = weekly.length, slot = innerW / n, barW = Math.min(46, slot * 0.55);
   let bars = '', labels = '', vals = '';
-  weekly.forEach((d, i) => { const h = (d.revenueYuan / niceMax) * innerH, x = padL + slot * i + (slot - barW) / 2, y = padT + innerH - h; bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, h).toFixed(1)}" rx="5" fill="#5aa9e6"></rect>`; if (d.revenueYuan > 0) vals += `<text x="${(x + barW / 2).toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle" font-size="11" fill="#e8920c">${d.revenueYuan.toFixed(0)}</text>`; labels += `<text x="${(x + barW / 2).toFixed(1)}" y="${H - 12}" text-anchor="middle" font-size="11" fill="#6b7c91">${d.date.slice(5)}</text>`; });
+  weekly.forEach((d, i) => { const h = (d.revenueYuan / niceMax) * innerH, x = padL + slot * i + (slot - barW) / 2, y = padT + innerH - h; bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0, h).toFixed(1)}" rx="5" fill="#5aa9e6"></rect>`; if (d.revenueYuan > 0) vals += `<text x="${(x + barW / 2).toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle" font-size="11" fill="#14507e">${d.revenueYuan.toFixed(0)}</text>`; labels += `<text x="${(x + barW / 2).toFixed(1)}" y="${H - 12}" text-anchor="middle" font-size="11" fill="#6b7c91">${d.date.slice(5)}</text>`; });
   let grid = '';
   for (let g = 0; g <= 4; g++) { const val = (niceMax / 4) * g, y = padT + innerH - (val / niceMax) * innerH; grid += `<line x1="${padL}" y1="${y}" x2="${W - 16}" y2="${y}" stroke="#d6e8f5"></line><text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="#6b7c91">${val.toFixed(0)}</text>`; }
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet">${grid}${bars}${vals}${labels}</svg>`;
