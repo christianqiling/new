@@ -2,6 +2,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { URL } = require('node:url');
 const { db } = require('./db');
 const api = require('./api');
@@ -168,8 +169,25 @@ setInterval(() => {
 }, TICK_MS);
 
 server.listen(PORT, () => {
-  console.log(`店内计时收费系统已启动: http://localhost:${PORT}`);
-  console.log(`实时扣费间隔: ${TICK_MS / 1000} 秒`);
+  console.log('==================================================');
+  console.log('  店内计时收费系统已启动');
+  console.log(`  本机访问：   http://localhost:${PORT}`);
+  // 打印局域网 IPv4 地址，方便同一网络的其它设备访问
+  const ifaces = os.networkInterfaces();
+  const lan = [];
+  for (const name of Object.keys(ifaces)) {
+    for (const ni of ifaces[name] || []) {
+      if (ni.family === 'IPv4' && !ni.internal) lan.push(ni.address);
+    }
+  }
+  if (lan.length) {
+    lan.forEach((ip) => console.log(`  局域网访问： http://${ip}:${PORT}   （手机/其它电脑用这个）`));
+  } else {
+    console.log('  （未检测到局域网地址，请用 ipconfig / ifconfig 查看本机 IP）');
+  }
+  console.log(`  实时扣费间隔：${TICK_MS / 1000} 秒`);
+  console.log('  按 Ctrl+C 停止服务');
+  console.log('==================================================');
 });
 
 module.exports = { server };
