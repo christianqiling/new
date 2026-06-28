@@ -3,7 +3,10 @@ const { db } = require('./db');
 const auth = require('./auth');
 const billing = require('./billing');
 const payment = require('./payment');
+const xlsx = require('./xlsx');
 const { PERMISSIONS, ROLES } = auth;
+
+function roleLabel(r) { return { SUPER_ADMIN: '超级管理员', SUB_ADMIN: '管理员', USER: '用户' }[r] || r; }
 
 function round2(n) { return Math.round(n * 100) / 100; }
 function safeParse(s) { try { return JSON.parse(s || '[]'); } catch (_) { return []; } }
@@ -598,6 +601,74 @@ function adminTransactions(ctx) {
   return ctx.json({ items: buildTxList(rows).slice(0, 300) });
 }
 
+// ---------- 用户导出（xlsx） ----------
+
+function usersExport(ctx) {
+  if (!ctx.user || !auth.hasPermission(ctx.user, PERMISSIONS.MANAGE_USERS)) return ctx.fail('无权限', 403);
+  const rows = db.prepare('SELECT * FROM users ORDER BY id ASC').all();
+  const activeIds = new Set(db.prepare("SELECT user_id FROM visits WHERE status = 'ACTIVE'").all().map((r) => r.user_id));
+  const header = ['ID', '用户名', '昵称', 'QQ号', '身份', '余额(元)', '状态', '权限', '注册时间'];
+  const data = [header.map((h) => ({ t: 's', v: h }))];
+  for (const u of rows) {
+    data.push([
+      { t: 'n', v: u.id },
+      { t: 's', v: u.username },
+      { t: 's', v: u.nickname || '' },
+      { t: 's', v: u.qq || '' },
+      { t: 's', v: roleLabel(u.role) },
+      { t: 'n', v: round2(u.balance_cents / 100) },
+      { t: 's', v: activeIds.has(u.id) ? '在店' : '离店' },
+      { t: 's', v: safeParse(u.permissions).join(',') },
+      { t: 's', v: u.created_at || '' },
+    ]);
+  }
+  const buf = xlsx.buildXlsx('用户列表', data);
+  const filename = `users_${localDate(new Date())}.xlsx`;
+  ctx.res.writeHead(200, {
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': `attachment; filename="${filename}"`,
+    'Content-Length': buf.length,
+  });
+  ctx.res.end(buf);
+}
+
+// ---------- 公告 ----------
+
+function announcementsList(ctx) {
+  if (!ctx.user) return ctx.fail('未登录', 401);
+  const rows = db.prepare('SELECT * FROM announcements ORDER BY pinned DESC, created_at DESC').all();
+  return ctx.json({
+    items: rows.map((a) => ({
+      id: a.id, title: a.title || '', content: a.content,
+      pinned: !!a.pinned, authorName: a.author_name || '', createdAt: a.created_at,
+    })),
+    canManage: auth.isAdmin(ctx.user),
+  });
+}
+
+function announceCreate(ctx) {
+  if (!ctx.user || !auth.isAdmin(ctx.user)) return ctx.fail('无权限', 403);
+  const { title, content, pinned } = ctx.body || {};
+  if (!content || !String(content).trim()) return ctx.fail('请填写公告内容');
+  db.prepare('INSERT INTO announcements (title, content, pinned, author_id, author_name, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(title ? String(title).trim() : '', String(content).trim(), pinned ? 1 : 0, ctx.user.id, displayName(ctx.user), nowIso());
+  return ctx.json({ ok: true });
+}
+
+function announceDelete(ctx) {
+  if (!ctx.user || !auth.isAdmin(ctx.user)) return ctx.fail('无权限', 403);
+  const { id } = ctx.body || {};
+  db.prepare('DELETE FROM announcements WHERE id = ?').run(Number(id));
+  return ctx.json({ ok: true });
+}
+
+function announcePin(ctx) {
+  if (!ctx.user || !auth.isAdmin(ctx.user)) return ctx.fail('无权限', 403);
+  const { id, pinned } = ctx.body || {};
+  db.prepare('UPDATE announcements SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, Number(id));
+  return ctx.json({ ok: true });
+}
+
 module.exports = {
   register, login, logout, status, checkUsername,
   visitStart, visitEnd,
@@ -605,6 +676,8 @@ module.exports = {
   adminEndVisit,
   adminUsers, usersCreate, usersUpdate, usersDelete, usersResetAvatar,
   setRole, setPermissions, opPasswordSet,
+  usersExport,
+  announcementsList, announceCreate, announceDelete, announcePin,
   adminGetPricing, adminSetPricing, adminReports,
   rechargeMethods, rechargeCreate, rechargeConfirm, rechargeStatus,
   myTransactions, adminTransactions,

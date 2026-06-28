@@ -94,13 +94,6 @@ function settleVisit(visit, upToMs, endManually = false) {
 
   const user = getUserStmt.get(visit.user_id);
   const fromMs = Date.parse(visit.last_tick);
-  let balance = user.balance_cents;
-
-  // 余额已为 0：直接因余额耗尽结束。
-  if (balance <= 1e-9) {
-    updateVisitStmt.run(visit.last_tick, visit.last_tick, visit.charged_cents, 'ENDED', 'NO_BALANCE', visit.id);
-    return db.prepare('SELECT * FROM visits WHERE id = ?').get(visit.id);
-  }
 
   if (now <= fromMs) {
     if (endManually) {
@@ -110,29 +103,23 @@ function settleVisit(visit, upToMs, endManually = false) {
     return visit;
   }
 
-  const { charged, reachedMs, depleted } = chargeUntilBudget(rules, fromMs, now, balance);
-
-  if (charged > 0) {
-    const newBalance = Math.max(0, balance - charged);
-    updateBalanceStmt.run(newBalance, user.id);
-    insertTxStmt.run(user.id, 'CHARGE', charged, null, visit.id, '游玩计费', new Date(now).toISOString());
-    visit.charged_cents += charged;
+  // 全额计费：余额可扣成负数，不会因余额耗尽自动结束（仅手动/管理员离店）
+  const cost = costForInterval(rules, fromMs, now);
+  if (cost > 0) {
+    updateBalanceStmt.run(user.balance_cents - cost, user.id);
+    insertTxStmt.run(user.id, 'CHARGE', cost, null, visit.id, '游玩计费', new Date(now).toISOString());
+    visit.charged_cents += cost;
   }
 
   let status = visit.status;
   let endTime = visit.end_time;
   let reason = visit.end_reason;
-  let lastTick = new Date(reachedMs).toISOString();
+  const lastTick = new Date(now).toISOString();
 
-  if (depleted) {
-    status = 'ENDED';
-    endTime = new Date(reachedMs).toISOString();
-    reason = 'NO_BALANCE';
-  } else if (endManually) {
+  if (endManually) {
     status = 'ENDED';
     endTime = new Date(now).toISOString();
     reason = 'MANUAL';
-    lastTick = new Date(now).toISOString();
   }
 
   updateVisitStmt.run(endTime, lastTick, visit.charged_cents, status, reason, visit.id);
@@ -158,7 +145,7 @@ function projectVisit(visit, nowMs = Date.now()) {
   const user = getUserStmt.get(visit.user_id);
   const sinceTick = costForInterval(rules, Date.parse(visit.last_tick), nowMs);
   const currentCost = visit.charged_cents + sinceTick;
-  const projectedBalance = Math.max(0, user.balance_cents - sinceTick);
+  const projectedBalance = user.balance_cents - sinceTick; // 可为负
   const rateNow = rateForHour(rules, new Date(nowMs).getHours());
   return { elapsedSec, currentCost, projectedBalance, rateNow };
 }

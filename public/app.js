@@ -276,6 +276,7 @@ function enterApp() {
   topbar.classList.remove('hidden');
   renderTopbar();
   state.view = state.status.caps.isAdmin ? 'admin' : 'user';
+  state._navAnim = true;
   fullRender();
   startTimers();
 }
@@ -305,10 +306,23 @@ function uiTick() {
     const extraCost = (av.rateNowCents * extraSec) / 3600;
     const costEl = $('#mCost'), balEl = $('#mBalance');
     if (costEl) costEl.textContent = money((av.currentCostCents + extraCost) / 100);
-    if (balEl) balEl.textContent = money(Math.max(0, av.projectedBalanceCents - extraCost) / 100);
+    if (balEl) {
+      const liveBal = (av.projectedBalanceCents - extraCost) / 100;
+      balEl.textContent = money(liveBal);
+      balEl.classList.toggle('neg', liveBal < 0);
+      balEl.classList.toggle('green', liveBal >= 0);
+    }
   }
 }
 function fullRender() { if (state.view === 'user') renderUser(); else if (state.view === 'admin') renderAdmin(); }
+
+// 导航切换时给视图根节点添加一次淡入动画（轮询刷新不触发）
+function applyNavAnim() {
+  if (!state._navAnim) return;
+  state._navAnim = false;
+  const root = content.firstElementChild;
+  if (root) root.classList.add('fx-in');
+}
 
 async function refreshNow() {
   try { state.status = await api('/api/status'); state.statusAt = Date.now(); renderTopbar(); fullRender(); }
@@ -324,6 +338,56 @@ function peopleListHtml(people) {
     </span>`).join('')}</div>`;
 }
 
+// ---------- 公告板块 ----------
+async function renderAnnouncements(boxId) {
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  let data;
+  try { data = await api('/api/announcements'); } catch (_) { box.innerHTML = '<p class="muted">公告加载失败</p>'; return; }
+  const items = data.items || [];
+  const list = items.length ? `<div class="ann-list">${items.map((a) => `
+    <div class="ann-item ${a.pinned ? 'pinned' : ''}">
+      <div class="ann-top">${a.pinned ? '<span class="ann-tag">📌 置顶</span>' : ''}${a.title ? `<span class="ann-title">${esc(a.title)}</span>` : ''}</div>
+      <div class="ann-content">${esc(a.content)}</div>
+      <div class="ann-meta"><span>${esc(a.authorName || '管理员')}</span><span>${new Date(a.createdAt).toLocaleString('zh-CN')}</span>
+        ${data.canManage ? `<span class="ann-acts">
+          <button class="btn btn-ghost annPin" data-id="${a.id}" data-p="${a.pinned ? 0 : 1}">${a.pinned ? '取消置顶' : '置顶'}</button>
+          <button class="btn btn-red annDel" data-id="${a.id}">删除</button></span>` : ''}
+      </div>
+    </div>`).join('')}</div>` : '<p class="empty">暂无公告</p>';
+  box.innerHTML = (data.canManage ? '<div style="margin-bottom:12px"><button id="annAdd" class="btn btn-sm">+ 发布公告</button></div>' : '') + list;
+  if (data.canManage) {
+    const add = document.getElementById('annAdd');
+    if (add) add.addEventListener('click', () => openAnnounceModal(boxId));
+    box.querySelectorAll('.annPin').forEach((b) => b.addEventListener('click', async () => {
+      try { await api('/api/admin/announcements/pin', { method: 'POST', body: JSON.stringify({ id: Number(b.dataset.id), pinned: Number(b.dataset.p) }) }); renderAnnouncements(boxId); }
+      catch (e) { toast(e.message, 'err'); }
+    }));
+    box.querySelectorAll('.annDel').forEach((b) => b.addEventListener('click', async () => {
+      if (!confirm('确定删除该公告？')) return;
+      try { await api('/api/admin/announcements/delete', { method: 'POST', body: JSON.stringify({ id: Number(b.dataset.id) }) }); renderAnnouncements(boxId); }
+      catch (e) { toast(e.message, 'err'); }
+    }));
+  }
+}
+
+function openAnnounceModal(boxId) {
+  openModal('发布公告', `
+    <label>标题（选填）</label><input id="anT" placeholder="公告标题" />
+    <label>内容</label>
+    <textarea id="anC" rows="4" placeholder="请输入公告内容" style="width:100%;padding:11px 13px;border-radius:10px;border:1px solid var(--line);background:#fff;color:var(--text);font-size:14px;font-family:inherit;resize:vertical"></textarea>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input id="anP" type="checkbox" style="width:auto"> 置顶此公告</label>
+    <button id="anBtn" class="btn btn-block" style="margin-top:14px">发布</button>
+  `, (close) => {
+    $('#anBtn').addEventListener('click', async () => {
+      try {
+        await api('/api/admin/announcements', { method: 'POST', body: JSON.stringify({ title: $('#anT').value, content: $('#anC').value, pinned: $('#anP').checked }) });
+        toast('公告已发布', 'ok'); close(); renderAnnouncements(boxId);
+      } catch (e) { toast(e.message, 'err'); }
+    });
+  });
+}
+
 // ---------- 用户视图 ----------
 function pricingTableHtml(pricing) {
   if (!pricing || !pricing.length) return '<p class="muted">未设置价格</p>';
@@ -335,16 +399,19 @@ function pricingTableHtml(pricing) {
 
 function renderUser() {
   const st = state.status, u = st.user, av = st.activeVisit, playing = !!av;
+  const bal = playing ? av.projectedBalanceYuan : u.balanceYuan;
   content.innerHTML = `
+    <div class="view-root">
+    <div class="card"><h2>📢 店内公告</h2><div id="annBox"><p class="muted">加载中…</p></div></div>
     <div class="grid cols-2">
       <div>
         <div class="card">
           <h2>我的账户</h2>
           <div class="metric">
             <span class="label">账户余额</span>
-            <span class="bignum green mono" id="mBalance">${money(playing ? av.projectedBalanceYuan : u.balanceYuan)}</span>
+            <span class="bignum mono ${bal < 0 ? 'neg' : 'green'}" id="mBalance">${money(bal)}</span>
           </div>
-          <p class="muted" style="margin-top:10px">余额由管理员充值，详见右侧价格表。</p>
+          <p class="muted" style="margin-top:10px">余额由管理员充值，详见右侧价格表。${bal < 0 ? '<span style="color:var(--red)"> 当前余额为负，请尽快充值。</span>' : ''}</p>
         </div>
         <div class="card">
           <h2>${playing ? '正在游玩中' : '开始游玩'}</h2>
@@ -372,11 +439,11 @@ function renderUser() {
             <div class="metric"><span class="label">在店管理员</span><span class="val">${st.store.adminCount} 人</span></div>
           </div>
           ${peopleListHtml(st.store.people)}
-          <small class="hint" style="display:block;margin-top:12px">为保护隐私，顾客姓名以首字+** 显示。</small>
         </div>
         <div class="card"><h2>价格表</h2>${pricingTableHtml(st.pricing)}</div>
         <div class="card"><h2>我的明细（充值 / 消费）</h2><div id="myTxBox"><p class="muted">加载中…</p></div></div>
       </div>
+    </div>
     </div>`;
 
   if (playing) $('#endBtn').addEventListener('click', async () => {
@@ -388,6 +455,8 @@ function renderUser() {
     catch (e) { toast(e.message, 'err'); }
   }); }
   loadMyTransactions();
+  renderAnnouncements('annBox');
+  applyNavAnim();
 }
 
 async function loadMyTransactions() {
@@ -427,9 +496,10 @@ function renderAdmin() {
     </div>
     <div id="adminBody"></div>`;
   content.querySelectorAll('.adminnav button').forEach((b) =>
-    b.addEventListener('click', () => { state.adminTab = b.dataset.tab; renderAdmin(); }));
+    b.addEventListener('click', () => { state._navAnim = true; state.adminTab = b.dataset.tab; renderAdmin(); }));
 
   const body = $('#adminBody');
+  if (state._navAnim) { state._navAnim = false; body.classList.add('fx-in'); }
   if (state.adminTab === 'overview') renderAdminOverview(body);
   else if (state.adminTab === 'users') renderAdminUserList(body);
   else if (state.adminTab === 'business') renderAdminBusiness(body);
@@ -438,6 +508,7 @@ function renderAdmin() {
 function renderAdminOverview(body) {
   const st = state.status, av = st.activeVisit, people = st.store.people || [], canManage = st.caps.MANAGE_USERS;
   body.innerHTML = `
+    <div class="card"><h2>📢 店内公告</h2><div id="annBox"><p class="muted">加载中…</p></div></div>
     <div class="grid cols-2">
       <div class="card">
         <h2>我的打卡</h2>
@@ -484,6 +555,7 @@ function renderAdminOverview(body) {
       toast(`已结束，时长 ${dur(r.durationSec)}，扣费 ${money(r.chargedYuan)}`, 'ok'); await refreshNow(); }
     catch (e) { toast(e.message, 'err'); }
   }));
+  renderAnnouncements('annBox');
 }
 
 // ---------- 用户列表（合并） ----------
@@ -507,8 +579,9 @@ async function renderAdminUserList(body) {
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <h2 style="margin:0">用户列表</h2>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
           ${isSuper ? '<button id="opPwBtn" class="btn btn-ghost btn-sm">设置操作密码</button>' : ''}
+          <button id="exportBtn" class="btn btn-ghost btn-sm">⬇ 导出Excel</button>
           <button id="addUserBtn" class="btn btn-sm">+ 新增用户</button>
         </div>
       </div>
@@ -534,6 +607,7 @@ async function renderAdminUserList(body) {
   paint();
 
   $('#userSearch').addEventListener('input', (e) => { state._userSearch = e.target.value; paint(); });
+  $('#exportBtn').addEventListener('click', () => { window.location.href = '/api/admin/users/export'; });
   $('#addUserBtn').addEventListener('click', () => openUserAddModal(() => renderAdminUserList(body)));
   if (isSuper) $('#opPwBtn').addEventListener('click', openOpPasswordModal);
 }
@@ -649,9 +723,10 @@ function renderAdminBusiness(body) {
       ${subs.map(([k, label]) => `<button data-sub="${k}" class="${state.bizTab === k ? 'active' : ''}">${label}</button>`).join('')}
     </div><div id="bizBody"></div>`;
   body.querySelectorAll('.adminnav.sub button').forEach((b) =>
-    b.addEventListener('click', () => { state.bizTab = b.dataset.sub; renderAdminBusiness(body); }));
+    b.addEventListener('click', () => { state._bizAnim = true; state.bizTab = b.dataset.sub; renderAdminBusiness(body); }));
 
   const bb = $('#bizBody');
+  if (state._bizAnim) { state._bizAnim = false; bb.classList.add('fx-in'); }
   if (state.bizTab === 'reports') renderAdminReports(bb);
   else if (state.bizTab === 'pricing') renderAdminPricing(bb);
   else renderAdminTxns(bb);

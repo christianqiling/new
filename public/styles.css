@@ -195,3 +195,71 @@ small.hint { color: var(--muted); font-size: 12px; }
 
 /* 用户列表搜索框 */
 .search-box { max-width: 280px; margin-bottom: 14px; }
+
+
+/* 负余额标红 */
+.bignum.neg, .val.neg, .neg { color: var(--red) !important; }
+
+/* 公告板块 */
+.ann-list { display: flex; flex-direction: column; gap: 10px; }
+.ann-item { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--panel-2); }
+.ann-item.pinned { border-color: rgba(232,146,12,.5); background: rgba(232,146,12,.06); }
+.ann-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+.ann-title { font-weight: 700; }
+.ann-tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: rgba(232,146,12,.16); color: var(--amber); font-weight: 600; }
+.ann-content { color: var(--text); white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+.ann-meta { color: var(--muted); font-size: 12px; margin-top: 6px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ann-acts { display: flex; gap: 6px; }
+.ann-acts button { padding: 3px 9px; font-size: 12px; }
+
+/* ---------- 切换/交互动画 ---------- */
+@keyframes fadeInUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modalPop { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: none; } }
+.fx-in { animation: fadeInUp .28s ease both; }
+.auth-wrap { animation: fadeInUp .28s ease both; }
+.modal { animation: modalPop .2s ease both; }
+.modal-overlay { animation: fadeIn .18s ease both; }
+.btn { transition: background .15s ease, filter .15s ease, transform .08s ease; }
+.btn:active { transform: scale(.96); }
+.adminnav button, .tabs button, .pay-method, .chip, .ann-item, .badge, input, select {
+  transition: background .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease;
+}
+tr { transition: background .12s ease; }
+tbody tr:hover { background: var(--panel-2); }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+
+/* ---------- 移动端响应式 ---------- */
+@media (max-width: 640px) {
+  #topbar { padding: 10px 12px; flex-wrap: wrap; gap: 8px; }
+  .brand { font-size: 15px; }
+  .topbar-right { gap: 6px; width: 100%; justify-content: flex-end; }
+  .whoami { font-size: 13px; }
+  .whoami span { max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar-right .btn { padding: 8px 10px; font-size: 12px; }
+
+  #content { padding: 14px 10px 48px; }
+  .card { padding: 15px; margin-bottom: 14px; border-radius: 12px; }
+  .card h2 { font-size: 15px; }
+  .grid, .grid.cols-2 { grid-template-columns: 1fr; gap: 14px; }
+  .bignum { font-size: 32px; }
+  .metric .val { font-size: 22px; }
+  .metrics { grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 12px; }
+
+  /* 表格横向滚动，避免拥挤 */
+  .card table { display: block; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; }
+
+  .adminnav { gap: 6px; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
+  .adminnav button { padding: 8px 12px; font-size: 13px; white-space: nowrap; }
+
+  .modal { max-width: 100%; border-radius: 12px; }
+  .modal-body { padding: 16px; }
+  .row { flex-direction: column; align-items: stretch; }
+  .row > * { flex: 1 1 auto; }
+  .rule-row { gap: 6px; }
+  .rule-row input { width: 72px; }
+  .filters { flex-direction: column; align-items: stretch; }
+  .filters > div { flex: 1 1 auto; }
+  .search-box { max-width: 100%; }
+  .avatar.sz-96 { width: 76px; height: 76px; font-size: 30px; }
+}
