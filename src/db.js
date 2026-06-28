@@ -148,19 +148,10 @@ function seed() {
     seeded = true;
   }
 
-  // 种子操作密码（用于用户列表的敏感操作：修改/删除用户信息）
-  const op = db.prepare("SELECT value FROM settings WHERE key = 'op_password'").get();
-  if (!op) {
-    const opPass = process.env.OP_PASSWORD || '123456';
-    db.prepare("INSERT INTO settings (key, value) VALUES ('op_password', ?)").run(hashPassword(opPass));
-    console.log(`[seed] 首次初始化：已创建管理操作密码 ${opPass} (用于修改/删除用户，请尽快修改)`);
-    seeded = true;
-  }
-
   // 二级统一密码（重要操作：修改管理员/超管信息、角色权限等）
   const lv2 = db.prepare("SELECT value FROM settings WHERE key = 'level2_password'").get();
   if (!lv2) {
-    const old = db.prepare("SELECT value FROM settings WHERE key = 'op_password'").get();
+    const old = db.prepare("SELECT value FROM settings WHERE key = 'op_password'").get(); // 兼容旧库迁移
     const val = old ? old.value : hashPassword(process.env.LEVEL2_PASSWORD || '123456');
     db.prepare("INSERT INTO settings (key, value) VALUES ('level2_password', ?)").run(val);
     console.log('[seed] 首次初始化：已设置二级统一密码（默认 123456，请尽快修改）');
